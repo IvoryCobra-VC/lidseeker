@@ -204,7 +204,7 @@ The Android app builds with `./gradlew assembleDebug` (Android SDK + JDK 17).
 
 Full history and downloads on the [releases page](https://github.com/IvoryCobra-VC/lidseeker/releases).
 
-### Unreleased
+### v0.2.0-beta
 - **Built-in web UI** (React/Vite) served by the backend at `/` — full parity with the app (Discover,
   Search, artist detail, request pipeline with retry/remove, Settings). No extra container.
 
