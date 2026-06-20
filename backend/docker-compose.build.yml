@@ -1,0 +1,6 @@
+# Build override: compile the image from this checkout instead of pulling the
+# published one. Use alongside the base file:
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+services:
+  lidseeker:
+    build: .
