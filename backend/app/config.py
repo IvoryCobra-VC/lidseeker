@@ -40,7 +40,7 @@ APP_USER = os.environ.get("APP_USER", "admin")
 #                      to put straight in docker-compose — no '$' escaping needed).
 #   APP_PASS_HASH    — a pre-computed bcrypt hash (takes precedence if both set).
 #                      Generate one with:
-#   docker run --rm ghcr.io/pauledwardodea-afk/lidseeker \
+#   docker run --rm ghcr.io/ivorycobra-vc/lidseeker \
 #     python -c "import bcrypt; print(bcrypt.hashpw(b'yourpass', bcrypt.gensalt()).decode())"
 APP_PASSWORD = os.environ.get("APP_PASSWORD", "")
 APP_PASS_HASH = os.environ.get("APP_PASS_HASH", "")

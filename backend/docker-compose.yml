@@ -1,6 +1,6 @@
 services:
   lidseeker:
-    image: ghcr.io/pauledwardodea-afk/lidseeker:latest
+    image: ghcr.io/ivorycobra-vc/lidseeker:latest
     container_name: lidseeker
     restart: unless-stopped
     network_mode: host          # reach Lidarr at localhost:8686

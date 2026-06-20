@@ -8,8 +8,8 @@
 <p align="center">
   <img alt="Status: beta" src="https://img.shields.io/badge/status-beta-orange">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
-  <a href="https://github.com/pauledwardodea-afk/lidseeker/actions/workflows/docker-publish.yml"><img alt="Build" src="https://github.com/pauledwardodea-afk/lidseeker/actions/workflows/docker-publish.yml/badge.svg"></a>
-  <a href="https://github.com/pauledwardodea-afk/lidseeker/pkgs/container/lidseeker"><img alt="GHCR image" src="https://img.shields.io/badge/ghcr.io-lidseeker-blue?logo=docker&logoColor=white"></a>
+  <a href="https://github.com/IvoryCobra-VC/lidseeker/actions/workflows/docker-publish.yml"><img alt="Build" src="https://github.com/IvoryCobra-VC/lidseeker/actions/workflows/docker-publish.yml/badge.svg"></a>
+  <a href="https://github.com/IvoryCobra-VC/lidseeker/pkgs/container/lidseeker"><img alt="GHCR image" src="https://img.shields.io/badge/ghcr.io-lidseeker-blue?logo=docker&logoColor=white"></a>
 </p>
 
 ---
@@ -17,7 +17,7 @@
 > [!WARNING]
 > **Lidseeker is in beta.** It works and is in daily use, but it's early software — expect rough edges
 > and the occasional breaking change, it's **single-user** only, and there are no screenshots or logo
-> yet. Back up the `/data` volume, and please [open an issue](https://github.com/pauledwardodea-afk/lidseeker/issues)
+> yet. Back up the `/data` volume, and please [open an issue](https://github.com/IvoryCobra-VC/lidseeker/issues)
 > for anything you hit. Feedback welcome!
 
 Lidseeker is two parts:
@@ -44,7 +44,7 @@ Create a `docker-compose.yml`:
 ```yaml
 services:
   lidseeker:
-    image: ghcr.io/pauledwardodea-afk/lidseeker:latest
+    image: ghcr.io/ivorycobra-vc/lidseeker:latest
     container_name: lidseeker
     restart: unless-stopped
     network_mode: host                 # so it can reach Lidarr at localhost:8686
@@ -182,7 +182,7 @@ interactive docs at `/docs`).
 The image is published automatically to GHCR, but you can build it yourself:
 
 ```bash
-git clone https://github.com/pauledwardodea-afk/lidseeker
+git clone https://github.com/IvoryCobra-VC/lidseeker
 cd lidseeker/backend
 docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 ```

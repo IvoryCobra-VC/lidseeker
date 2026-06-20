@@ -27,9 +27,9 @@ request that finds no source after `SEARCH_GIVE_UP_ATTEMPTS` search cycles is ma
 ```bash
 cp .env.example .env       # set LIDARR_URL + LIDARR_API_KEY, APP_PASS_HASH, JWT_SECRET
 # generate a password hash:
-docker run --rm ghcr.io/pauledwardodea-afk/lidseeker python -c "import bcrypt; print(bcrypt.hashpw(b'YOURPASS', bcrypt.gensalt()).decode())"
+docker run --rm ghcr.io/ivorycobra-vc/lidseeker python -c "import bcrypt; print(bcrypt.hashpw(b'YOURPASS', bcrypt.gensalt()).decode())"
 
-docker compose up -d        # pulls ghcr.io/pauledwardodea-afk/lidseeker
+docker compose up -d        # pulls ghcr.io/ivorycobra-vc/lidseeker
 curl localhost:5056/api/health      # {"status":"ok"}
 ```
 
