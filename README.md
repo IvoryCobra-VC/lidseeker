@@ -189,6 +189,22 @@ docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 
 The Android app builds with `./gradlew assembleDebug` (Android SDK + JDK 17).
 
+## Changelog
+
+Full history and downloads on the [releases page](https://github.com/IvoryCobra-VC/lidseeker/releases).
+
+### v0.1.1-beta
+- Backend image now published at `ghcr.io/ivorycobra-vc/lidseeker` (updated registry namespace).
+- `MUSICBRAINZ_CONTACT` now defaults to the project repo (correct MusicBrainz User-Agent out of the box).
+- README/docs polish.
+
+### v0.1.0-beta
+- First public beta.
+- Search & request (artists / albums / songs), live 5-stage request pipeline, give-up → **Failed** with retry.
+- Discover unowned releases by genre/decade; optional ntfy push notifications.
+- Works with any Lidarr download client; optional Soularr + slskd (Soulseek) adapter.
+- Prebuilt multi-arch (amd64 + arm64) Docker image + sideloadable Android APK.
+
 ## License
 
 [MIT](LICENSE). Lidseeker is an independent project. It integrates with Lidarr, and optionally with
