@@ -44,7 +44,7 @@ Create a `docker-compose.yml`:
 ```yaml
 services:
   lidseeker:
-    image: ghcr.io/IvoryCobra-VC/lidseeker:latest
+    image: ghcr.io/ivorycobra-vc/lidseeker:latest
     container_name: lidseeker
     restart: unless-stopped
     network_mode: host                 # so it can reach Lidarr at localhost:8686
