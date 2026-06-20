@@ -35,9 +35,18 @@ MUSICBRAINZ_USER_AGENT = os.environ.get(
 
 # --- Auth (single user) ---
 APP_USER = os.environ.get("APP_USER", "admin")
-# bcrypt hash of the password. Generate with:
-#   python -c "from passlib.hash import bcrypt; print(bcrypt.hash('yourpass'))"
+# Two ways to set the password:
+#   APP_PASSWORD     — plaintext; hashed in-memory at startup (simplest, and safe
+#                      to put straight in docker-compose — no '$' escaping needed).
+#   APP_PASS_HASH    — a pre-computed bcrypt hash (takes precedence if both set).
+#                      Generate one with:
+#   docker run --rm ghcr.io/pauledwardodea-afk/lidseeker \
+#     python -c "import bcrypt; print(bcrypt.hashpw(b'yourpass', bcrypt.gensalt()).decode())"
+APP_PASSWORD = os.environ.get("APP_PASSWORD", "")
 APP_PASS_HASH = os.environ.get("APP_PASS_HASH", "")
+if not APP_PASS_HASH and APP_PASSWORD:
+    import bcrypt
+    APP_PASS_HASH = bcrypt.hashpw(APP_PASSWORD.encode(), bcrypt.gensalt()).decode()
 JWT_SECRET = os.environ.get("JWT_SECRET", "change-me")
 JWT_TTL_HOURS = int(os.environ.get("JWT_TTL_HOURS", "720"))  # 30 days
 
