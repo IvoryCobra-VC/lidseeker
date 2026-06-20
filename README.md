@@ -49,16 +49,20 @@ toggle) are hidden in the app when it's off.
 ## Quick start
 
 ```bash
-# 1. Backend
+# 1. Backend — pulls the prebuilt image from GHCR (no build needed)
 cd backend
 cp .env.example .env          # set LIDARR_URL/KEY, APP_PASS_HASH, JWT_SECRET
-docker compose up -d --build
+docker compose up -d
 curl localhost:5056/api/health   # {"status":"ok"}
 
 # 2. App — build a debug APK and sideload it
 cd ../android
 ./gradlew assembleDebug        # app/build/outputs/apk/debug/app-debug.apk
 ```
+
+The backend image is published at `ghcr.io/pauledwardodea-afk/lidseeker` (multi-arch,
+amd64 + arm64). To build it from source instead of pulling:
+`docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build`.
 
 On first launch, enter your backend's URL (e.g. `http://192.168.1.10:5056` on the LAN, or your
 reverse-proxied HTTPS address) plus the username/password from the backend's `.env`.

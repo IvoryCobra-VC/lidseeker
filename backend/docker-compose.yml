@@ -1,6 +1,6 @@
 services:
   lidseeker:
-    build: .
+    image: ghcr.io/pauledwardodea-afk/lidseeker:latest
     container_name: lidseeker
     restart: unless-stopped
     network_mode: host          # reach Lidarr at localhost:8686
@@ -11,9 +11,13 @@ services:
     environment:
       - TZ=${TZ:-UTC}
 
-# This base file runs lidseeker in Lidarr-native mode (download progress comes
-# straight from Lidarr's queue — works with any Lidarr download client).
+# This base file pulls the prebuilt image and runs lidseeker in Lidarr-native
+# mode (download progress comes straight from Lidarr's queue — works with any
+# Lidarr download client):
+#   docker compose up -d
 #
-# To use the optional Soularr + slskd (Soulseek) adapter as well, layer the
-# overlay on top:
+# Build from source instead (for development) by layering the build override:
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+#
+# Add the optional Soularr + slskd (Soulseek) adapter with its overlay:
 #   docker compose -f docker-compose.yml -f docker-compose.soularr.yml up -d

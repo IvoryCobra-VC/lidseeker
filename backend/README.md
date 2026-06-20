@@ -27,15 +27,22 @@ request that finds no source after `SEARCH_GIVE_UP_ATTEMPTS` search cycles is ma
 ```bash
 cp .env.example .env       # set LIDARR_URL + LIDARR_API_KEY, APP_PASS_HASH, JWT_SECRET
 # generate a password hash:
-docker run --rm lidseeker python -c "import bcrypt; print(bcrypt.hashpw(b'YOURPASS', bcrypt.gensalt()).decode())"
+docker run --rm ghcr.io/pauledwardodea-afk/lidseeker python -c "import bcrypt; print(bcrypt.hashpw(b'YOURPASS', bcrypt.gensalt()).decode())"
 
-docker compose up -d --build
+docker compose up -d        # pulls ghcr.io/pauledwardodea-afk/lidseeker
 curl localhost:5056/api/health      # {"status":"ok"}
 ```
 
 Runs on **port 5056** with host networking (so it reaches Lidarr at `localhost:8686`). The
 SQLite request store lives in `./data`. Set `PUID`/`PGID`/`TZ` in your environment to match your
 host user if needed.
+
+The image is prebuilt and published to GHCR (multi-arch: amd64 + arm64). `./deploy.sh` pulls the
+latest and restarts. To run from source instead of pulling:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+```
 
 ## Optional: Soularr + slskd (Soulseek) adapter
 
