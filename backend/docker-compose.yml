@@ -1,0 +1,19 @@
+services:
+  lidseeker:
+    build: .
+    container_name: lidseeker
+    restart: unless-stopped
+    network_mode: host          # reach Lidarr at localhost:8686
+    user: "${PUID:-1000}:${PGID:-1000}"
+    env_file: .env
+    volumes:
+      - ./data:/data            # SQLite request store
+    environment:
+      - TZ=${TZ:-UTC}
+
+# This base file runs lidseeker in Lidarr-native mode (download progress comes
+# straight from Lidarr's queue — works with any Lidarr download client).
+#
+# To use the optional Soularr + slskd (Soulseek) adapter as well, layer the
+# overlay on top:
+#   docker compose -f docker-compose.yml -f docker-compose.soularr.yml up -d

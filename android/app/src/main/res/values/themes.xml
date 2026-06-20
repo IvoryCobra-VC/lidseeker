@@ -1,0 +1,6 @@
+<resources>
+    <style name="Theme.Lidseeker" parent="android:Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:windowBackground">@color/ic_launcher_background</item>
+    </style>
+</resources>

@@ -1,0 +1,32 @@
+# Optional overlay: the Soularr + slskd (Soulseek) download adapter.
+#
+# Use alongside the base file:
+#   docker compose -f docker-compose.yml -f docker-compose.soularr.yml up -d
+#
+# It adds:
+#   - a read/write mount of your Soularr directory (for the quality toggle and
+#     the retry/denylist feature), and
+#   - a locked-down Docker-socket proxy that lets lidseeker restart ONLY the
+#     `soularr` container ("Search now"). The raw docker.sock never reaches the
+#     lidseeker app itself.
+#
+# Set SOULARR_DIR in your environment (or edit the path below) and fill in the
+# SLSKD_* / SOULARR_* values in .env.
+services:
+  lidseeker:
+    volumes:
+      - ${SOULARR_DIR:-./soularr}:/soularr
+    depends_on:
+      - docker-proxy
+
+  docker-proxy:
+    image: nginx:alpine
+    container_name: lidseeker-docker-proxy
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:2375:2375"   # localhost only; reachable by host-net lidseeker
+    volumes:
+      - ./docker-proxy/nginx.conf:/etc/nginx/nginx.conf:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - TZ=${TZ:-UTC}

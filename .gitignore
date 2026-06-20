@@ -1,0 +1,21 @@
+# Secrets / local config
+backend/.env
+android/local.properties
+
+# Python / backend
+__pycache__/
+*.pyc
+backend/data/
+
+# Android / Gradle
+android/build/
+android/app/build/
+android/.gradle/
+*.apk
+*.keystore
+*.jks
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
