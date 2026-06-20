@@ -17,7 +17,7 @@ from .schemas import (
 )
 
 log = logging.getLogger("lidseeker")
-app = FastAPI(title="lidseeker", version="0.1.1-beta")
+app = FastAPI(title="lidseeker", version="0.2.0-beta")
 
 
 @app.exception_handler(httpx.HTTPError)
