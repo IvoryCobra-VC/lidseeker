@@ -57,6 +57,35 @@ app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
 )
 
+# Baseline security headers for the served SPA. The token lives in localStorage
+# (accepted tradeoff for a self-hosted JWT SPA), so a CSP is the pragmatic XSS
+# mitigation. img-src allows any https host since album art comes from several
+# CDNs (images.lidarr.audio, coverartarchive.org, ...); style-src needs
+# 'unsafe-inline' for React inline styles.
+_CSP = (
+    "default-src 'self'; "
+    "img-src 'self' https: data:; "
+    "style-src 'self' 'unsafe-inline'; "
+    "script-src 'self'; "
+    "connect-src 'self'; "
+    "font-src 'self'; "
+    "base-uri 'self'; "
+    "frame-ancestors 'none'"
+)
+# Skip the CSP on the API docs — Swagger/ReDoc load assets + inline scripts that a
+# strict 'self' policy would break.
+_NO_CSP_PATHS = ("/docs", "/redoc", "/openapi.json")
+
+
+@app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    if not request.url.path.startswith(_NO_CSP_PATHS):
+        response.headers.setdefault("Content-Security-Policy", _CSP)
+    return response
+
 
 def _requeue_stranded_requests() -> None:
     """A request whose add task was interrupted by a restart sits 'pending' with
