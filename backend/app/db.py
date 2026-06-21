@@ -38,6 +38,9 @@ CREATE TABLE IF NOT EXISTS users (
 def init() -> None:
     os.makedirs(os.path.dirname(config.DB_PATH), exist_ok=True)
     with _conn() as c:
+        # WAL lets the background loops read/write without blocking request
+        # handlers (and vice-versa); it's a persistent DB property, set once.
+        c.execute("PRAGMA journal_mode=WAL")
         c.executescript(_SCHEMA)
         # Lightweight migration for existing DBs.
         cols = {r[1] for r in c.execute("PRAGMA table_info(requests)")}
@@ -71,7 +74,9 @@ def seed_admin_from_env() -> None:
 
 @contextmanager
 def _conn():
-    conn = sqlite3.connect(config.DB_PATH)
+    # timeout is SQLite's busy-timeout: wait up to 10s for a lock instead of
+    # raising "database is locked" immediately under concurrent writers.
+    conn = sqlite3.connect(config.DB_PATH, timeout=10.0)
     conn.row_factory = sqlite3.Row
     try:
         yield conn

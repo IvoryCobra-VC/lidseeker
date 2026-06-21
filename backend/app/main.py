@@ -47,6 +47,11 @@ async def _startup() -> None:
     asyncio.create_task(_reconcile_loop())   # keep pending requests monitored
 
 
+@app.on_event("shutdown")
+async def _shutdown() -> None:
+    await lidarr.aclose()   # close the shared HTTP client
+
+
 async def _status_loop() -> None:
     """Background poller. For each unresolved request it: refreshes live status
     from Lidarr; counts fruitless Soularr search cycles and gives up (marks
@@ -322,31 +327,43 @@ async def create_request(
     return _to_out(row)
 
 
+# Resolve at most this many requests' live status concurrently. Bounds the burst
+# of Lidarr/slskd calls when someone has a long request list.
+_REQUESTS_CONCURRENCY = 8
+
+
 @app.get("/api/requests", response_model=list[RequestOut])
 async def list_requests(user: auth.CurrentUser = Depends(auth.require_user)) -> list[dict]:
     # Admins see everyone's requests (with the requester shown); others see only theirs.
     rows = db.list_requests() if user.is_admin else db.list_requests(user_id=user.id)
     names = db.usernames_by_id() if user.is_admin else {}
-    out = []
-    for row in rows:
-        # Refresh live status from Lidarr for resolved requests. 'error' and
-        # 'failed' are terminal — don't let a 0% album flip them back to pending.
-        if row["status"] not in ("error", "failed") and (
-            row["lidarr_album_id"] or row["lidarr_artist_id"]
-        ):
-            live = await lidarr.request_status(
-                row["lidarr_album_id"], row["lidarr_artist_id"]
+    # Fetch Lidarr's download queue ONCE for the whole batch (not per row).
+    queue_index = await lidarr.queue_index()
+    sem = asyncio.Semaphore(_REQUESTS_CONCURRENCY)
+
+    async def _resolve(row: dict) -> dict:
+        async with sem:
+            # Refresh live status from Lidarr for resolved requests. 'error' and
+            # 'failed' are terminal — don't let a 0% album flip them back to pending.
+            if row["status"] not in ("error", "failed") and (
+                row["lidarr_album_id"] or row["lidarr_artist_id"]
+            ):
+                live = await lidarr.request_status(
+                    row["lidarr_album_id"], row["lidarr_artist_id"]
+                )
+                if live != row["status"]:
+                    db.update_status(row["id"], live)
+                    row["status"] = live
+            # Detailed pipeline for the expandable My Requests view.
+            pipeline = await lidarr.request_pipeline(
+                row["lidarr_album_id"], row["lidarr_artist_id"],
+                row["artist"], row["status"], row["created_at"],
+                queue_index=queue_index,
             )
-            if live != row["status"]:
-                db.update_status(row["id"], live)
-                row["status"] = live
-        # Detailed pipeline for the expandable My Requests view.
-        pipeline = await lidarr.request_pipeline(
-            row["lidarr_album_id"], row["lidarr_artist_id"],
-            row["artist"], row["status"], row["created_at"],
-        )
-        out.append(_to_out(row, pipeline, requested_by=names.get(row.get("user_id"))))
-    return out
+            return _to_out(row, pipeline, requested_by=names.get(row.get("user_id")))
+
+    # gather preserves input order, so rows stay newest-first.
+    return await asyncio.gather(*(_resolve(row) for row in rows))
 
 
 @app.delete("/api/requests/{rid}", response_model=ActionResult)

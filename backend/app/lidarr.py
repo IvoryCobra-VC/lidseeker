@@ -5,6 +5,7 @@ the library (added with no albums monitored), then monitor just the requested
 album. Soularr's own cycle then searches slskd for monitored+missing albums.
 """
 import asyncio
+import contextlib
 import time
 from collections import Counter
 from datetime import date
@@ -23,9 +24,31 @@ _IMAGE_PREF = {
     "artist": ("poster", "fanart", "cover", "banner"),
 }
 
+# One shared, connection-pooled client for the whole app instead of a fresh
+# TCP+TLS handshake per call. Created lazily inside the running loop and reused;
+# `_client()` stays an `async with` context manager but no longer closes the
+# client on exit, so existing call-sites are unchanged.
+_shared_client: Optional[httpx.AsyncClient] = None
 
-def _client() -> httpx.AsyncClient:
-    return httpx.AsyncClient(base_url=_API, headers=_HEADERS, timeout=30.0)
+
+def _get_client() -> httpx.AsyncClient:
+    global _shared_client
+    if _shared_client is None or _shared_client.is_closed:
+        _shared_client = httpx.AsyncClient(base_url=_API, headers=_HEADERS, timeout=30.0)
+    return _shared_client
+
+
+@contextlib.asynccontextmanager
+async def _client():
+    yield _get_client()
+
+
+async def aclose() -> None:
+    """Close the shared client on app shutdown."""
+    global _shared_client
+    if _shared_client is not None and not _shared_client.is_closed:
+        await _shared_client.aclose()
+    _shared_client = None
 
 
 # --------------------------------------------------------------------------
@@ -716,20 +739,18 @@ def _status_from_percent(percent: Optional[float]) -> str:
 
 async def request_status(lidarr_album_id: Optional[int],
                          lidarr_artist_id: Optional[int]) -> str:
-    async with _client() as c:
-        try:
-            if lidarr_album_id:
-                r = await c.get(f"/album/{lidarr_album_id}")
-                r.raise_for_status()
-                stats = r.json().get("statistics", {}) or {}
-                return _status_from_percent(stats.get("percentOfTracks"))
-            if lidarr_artist_id:
+    try:
+        if lidarr_album_id:
+            stats = await _album_stats(lidarr_album_id)
+            return _status_from_percent(stats.get("percentOfTracks"))
+        if lidarr_artist_id:
+            async with _client() as c:
                 r = await c.get(f"/artist/{lidarr_artist_id}")
                 r.raise_for_status()
                 stats = r.json().get("statistics", {}) or {}
                 return _status_from_percent(stats.get("percentOfTracks"))
-        except httpx.HTTPError:
-            return "pending"
+    except httpx.HTTPError:
+        return "pending"
     return "pending"
 
 
@@ -740,23 +761,53 @@ async def request_status(lidarr_album_id: Optional[int],
 PIPELINE_STAGES = ["requested", "searching", "downloading", "importing", "available"]
 
 
-async def _album_stats(album_id: int) -> dict:
+# Short-lived cache for /album/{id}. request_status + request_pipeline both read
+# the same album in one /api/requests pass, and the list is polled every few
+# seconds, so a 3s TTL collapses the duplicate fetches without showing stale data.
+_ALBUM_TTL = 3.0
+_album_cache: dict[int, tuple[float, dict]] = {}
+
+
+async def _get_album(album_id: int) -> dict:
+    now = time.monotonic()
+    hit = _album_cache.get(album_id)
+    if hit and now - hit[0] < _ALBUM_TTL:
+        return hit[1]
     async with _client() as c:
         r = await c.get(f"/album/{album_id}")
         r.raise_for_status()
-        return r.json().get("statistics", {}) or {}
+        data = r.json()
+    _album_cache[album_id] = (now, data)
+    return data
+
+
+async def _album_stats(album_id: int) -> dict:
+    return (await _get_album(album_id)).get("statistics", {}) or {}
+
+
+async def queue_index() -> dict[int, str]:
+    """Map albumId -> Lidarr trackedDownloadState for everything in the queue,
+    fetched ONCE so callers don't re-pull the whole queue per album. Returns {}
+    on any upstream error (callers degrade to a coarse stage)."""
+    try:
+        async with _client() as c:
+            r = await c.get("/queue", params={"pageSize": 100})
+            r.raise_for_status()
+            idx: dict[int, str] = {}
+            for rec in r.json().get("records", []):
+                aid = rec.get("albumId")
+                if aid is not None:
+                    state = rec.get("trackedDownloadState") or rec.get("status")
+                    if state:
+                        idx[aid] = state
+            return idx
+    except httpx.HTTPError:
+        return {}
 
 
 async def _queue_state_for_album(album_id: int) -> Optional[str]:
-    """Return Lidarr's trackedDownloadState for the album if it's in the queue
-    (e.g. 'downloading', 'importPending', 'importing'), else None."""
-    async with _client() as c:
-        r = await c.get("/queue", params={"pageSize": 100})
-        r.raise_for_status()
-        for rec in r.json().get("records", []):
-            if rec.get("albumId") == album_id:
-                return rec.get("trackedDownloadState") or rec.get("status")
-    return None
+    """Single-album fallback used when no pre-fetched queue index is supplied."""
+    return (await queue_index()).get(album_id)
 
 
 def _build_pipeline(stage: str, percent: float, files: int, total: int,
@@ -795,10 +846,14 @@ async def request_pipeline(lidarr_album_id: Optional[int],
                            lidarr_artist_id: Optional[int],
                            artist_name: Optional[str],
                            status: str,
-                           created_at: Optional[str] = None) -> dict:
+                           created_at: Optional[str] = None,
+                           queue_index: Optional[dict[int, str]] = None) -> dict:
     """Resolve where a request sits in the pipeline:
     requested -> searching -> downloading -> importing -> available.
-    Best-effort: any upstream hiccup degrades gracefully to a coarse stage."""
+    Best-effort: any upstream hiccup degrades gracefully to a coarse stage.
+
+    Pass `queue_index` (from `queue_index()`) when resolving many requests at once
+    so the Lidarr queue is fetched once for the whole batch, not once per album."""
     from . import slskd, soularr_cfg  # local import to avoid a cycle at module load
 
     if status == "error":
@@ -836,11 +891,15 @@ async def request_pipeline(lidarr_album_id: Optional[int],
             + (f" from {prog['username']}" if prog.get("username") else ""),
         )
 
-    # Lidarr-tracked phase (import after slskd completes).
-    try:
-        qstate = await _queue_state_for_album(lidarr_album_id)
-    except httpx.HTTPError:
-        qstate = None
+    # Lidarr-tracked phase (import after slskd completes). Use the batch-fetched
+    # queue index when one was supplied, else fall back to a single-album lookup.
+    if queue_index is not None:
+        qstate = queue_index.get(lidarr_album_id)
+    else:
+        try:
+            qstate = await _queue_state_for_album(lidarr_album_id)
+        except httpx.HTTPError:
+            qstate = None
     if qstate:
         q = qstate.lower()
         if "import" in q:
