@@ -3,6 +3,7 @@ import asyncio
 import logging
 import mimetypes
 import os
+from contextlib import asynccontextmanager
 from typing import Optional
 
 import bcrypt
@@ -12,14 +13,33 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import auth, config, db, lidarr, notify, slskd, soularr_cfg, soularr_ctl
+from . import __version__, auth, config, db, lidarr, notify, slskd, soularr_cfg, soularr_ctl
 from .schemas import (
     ActionResult, DiscoverCategories, LoginIn, Me, PasswordChange, RequestIn, RequestOut,
     SearchResult, ServiceLink, Settings, SettingsIn, TokenOut, Track, User, UserCreate,
 )
 
 log = logging.getLogger("lidseeker")
-app = FastAPI(title="lidseeker", version="0.2.0-beta")
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # Startup
+    db.init()
+    db.baseline_notifications()   # don't notify for already-available requests
+    _requeue_stranded_requests()  # recover any add that a restart interrupted
+    # Always run: besides ntfy pushes it also tracks the give-up counter and
+    # cleans up slskd searches, which must happen even if ntfy is disabled.
+    asyncio.create_task(_status_loop())
+    asyncio.create_task(_reconcile_loop())   # keep pending requests monitored
+    try:
+        yield
+    finally:
+        # Shutdown
+        await lidarr.aclose()   # close the shared HTTP client
+
+
+app = FastAPI(title="lidseeker", version=__version__, lifespan=lifespan)
 
 
 @app.exception_handler(httpx.HTTPError)
@@ -37,17 +57,6 @@ app.add_middleware(
 )
 
 
-@app.on_event("startup")
-async def _startup() -> None:
-    db.init()
-    db.baseline_notifications()   # don't notify for already-available requests
-    _requeue_stranded_requests()  # recover any add that a restart interrupted
-    # Always run: besides ntfy pushes it also tracks the give-up counter and
-    # cleans up slskd searches, which must happen even if ntfy is disabled.
-    asyncio.create_task(_status_loop())
-    asyncio.create_task(_reconcile_loop())   # keep pending requests monitored
-
-
 def _requeue_stranded_requests() -> None:
     """A request whose add task was interrupted by a restart sits 'pending' with
     nothing in Lidarr forever. Re-dispatch the add for each so it completes."""
@@ -56,11 +65,6 @@ def _requeue_stranded_requests() -> None:
         asyncio.create_task(_process_request(row["id"], row["type"], row["foreign_id"]))
     if stranded:
         log.info("requeued %d request(s) stranded by a restart", len(stranded))
-
-
-@app.on_event("shutdown")
-async def _shutdown() -> None:
-    await lidarr.aclose()   # close the shared HTTP client
 
 
 async def _status_loop() -> None:
@@ -165,7 +169,11 @@ async def health() -> JSONResponse:
     db_ok = db.ping()
     return JSONResponse(
         status_code=200 if db_ok else 503,
-        content={"status": "ok" if db_ok else "degraded", "db": db_ok},
+        content={
+            "status": "ok" if db_ok else "degraded",
+            "db": db_ok,
+            "version": __version__,
+        },
     )
 
 
@@ -258,7 +266,7 @@ async def delete_user(
 async def search(
     term: str = Query(..., min_length=1),
     type: str = Query("album", pattern="^(artist|album|track)$"),
-    _user: str = Depends(auth.require_user),
+    _user: auth.CurrentUser = Depends(auth.require_user),
 ) -> list[dict]:
     if type == "track":
         return await lidarr.search_tracks(term)
@@ -267,14 +275,14 @@ async def search(
 
 @app.get("/api/artist/{foreign_id}/albums", response_model=list[SearchResult])
 async def artist_albums(
-    foreign_id: str, _user: str = Depends(auth.require_user)
+    foreign_id: str, _user: auth.CurrentUser = Depends(auth.require_user)
 ) -> list[dict]:
     return await lidarr.artist_albums(foreign_id)
 
 
 @app.get("/api/album/{foreign_id}/tracks", response_model=list[Track])
 async def album_tracks(
-    foreign_id: str, _user: str = Depends(auth.require_user)
+    foreign_id: str, _user: auth.CurrentUser = Depends(auth.require_user)
 ) -> list[dict]:
     """Tracklist for an album (for the expandable song view)."""
     return await lidarr.album_tracks(foreign_id)
@@ -456,7 +464,7 @@ async def retry_request(
 async def discover_categories(
     genre: Optional[str] = Query(None),
     decade: Optional[int] = Query(None),
-    _user: str = Depends(auth.require_user),
+    _user: auth.CurrentUser = Depends(auth.require_user),
 ) -> dict:
     """Genre + decade chips for the Discover tab, each conditioned on the other
     active filter so the chips only offer combinations that have results."""
@@ -467,7 +475,7 @@ async def discover_categories(
 async def discover(
     genre: Optional[str] = Query(None),
     decade: Optional[int] = Query(None),
-    _user: str = Depends(auth.require_user),
+    _user: auth.CurrentUser = Depends(auth.require_user),
 ) -> list[dict]:
     """Unowned releases from artists in your library. No filter → newest first;
     a `genre` or `decade` browses that category instead."""
@@ -487,7 +495,7 @@ async def get_settings(user: auth.CurrentUser = Depends(auth.require_user)) -> d
 
 @app.put("/api/settings", response_model=ActionResult)
 async def put_settings(
-    body: SettingsIn, _user: str = Depends(auth.require_user)
+    body: SettingsIn, _user: auth.CurrentUser = Depends(auth.require_user)
 ) -> dict:
     if not config.SOULARR_ENABLED:
         raise HTTPException(409, "Quality control is only available with the Soularr adapter.")
@@ -509,7 +517,7 @@ async def put_settings(
 
 
 @app.get("/api/services", response_model=list[ServiceLink])
-async def services(_user: str = Depends(auth.require_user)) -> list[dict]:
+async def services(_user: auth.CurrentUser = Depends(auth.require_user)) -> list[dict]:
     """Links to the pipeline services (from SERVICE_LINKS), shown under a request."""
     return config.SERVICE_LINKS
 
@@ -535,7 +543,7 @@ async def _search_now() -> None:
 
 @app.post("/api/search-now", response_model=ActionResult)
 @app.post("/api/soularr/run", response_model=ActionResult)  # legacy alias
-async def search_now(_user: str = Depends(auth.require_user)) -> dict:
+async def search_now(_user: auth.CurrentUser = Depends(auth.require_user)) -> dict:
     """Force a search now instead of waiting for the next cycle."""
     try:
         await _search_now()
