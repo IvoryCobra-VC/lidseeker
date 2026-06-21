@@ -1,5 +1,16 @@
 import type { Pipeline as PipelineT, ServiceLink } from "../types";
 
+// Only render service links that are real http(s) URLs — a SERVICE_LINKS entry
+// with a javascript:/data: scheme must never become a live href.
+function safeHref(url: string): string | null {
+  try {
+    const u = new URL(url);
+    return u.protocol === "http:" || u.protocol === "https:" ? url : null;
+  } catch {
+    return null;
+  }
+}
+
 const STAGE_LABELS: Record<string, string> = {
   requested: "Requested",
   searching: "Searching",
@@ -79,11 +90,15 @@ export function Pipeline({
           <span className="muted" style={{ alignSelf: "center", fontSize: 12 }}>
             Open in
           </span>
-          {services.map((s) => (
-            <a className="chip" key={s.name} href={s.url} target="_blank" rel="noreferrer">
-              {s.name} ↗
-            </a>
-          ))}
+          {services.map((s) => {
+            const href = safeHref(s.url);
+            if (!href) return null;
+            return (
+              <a className="chip" key={s.name} href={href} target="_blank" rel="noreferrer">
+                {s.name} ↗
+              </a>
+            );
+          })}
         </div>
       )}
     </div>
