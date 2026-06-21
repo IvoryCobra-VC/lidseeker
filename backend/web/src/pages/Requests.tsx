@@ -16,7 +16,11 @@ export function Requests() {
   const [searching, setSearching] = useState(false);
   const [searchMessage, setSearchMessage] = useState<string | null>(null);
   const [confirmRemove, setConfirmRemove] = useState<MusicRequest | null>(null);
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
   const first = useRef(true);
+
+  const errText = (e: unknown, fallback: string) =>
+    e instanceof Error && e.message ? e.message : fallback;
 
   const refresh = async () => {
     try {
@@ -41,12 +45,20 @@ export function Requests() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Auto-dismiss transient retry/remove feedback.
+  useEffect(() => {
+    if (!actionMessage) return;
+    const t = setTimeout(() => setActionMessage(null), 4000);
+    return () => clearTimeout(t);
+  }, [actionMessage]);
+
   const retry = async (id: number) => {
     setRetryingId(id);
     try {
-      await api.retry(id);
-    } catch {
-      /* ignore */
+      const res = await api.retry(id);
+      setActionMessage(res.message ?? "Retrying…");
+    } catch (e) {
+      setActionMessage(`Couldn't retry: ${errText(e, "try again")}`);
     }
     setRetryingId(null);
     refresh();
@@ -55,9 +67,10 @@ export function Requests() {
   const remove = async (id: number) => {
     setConfirmRemove(null);
     try {
-      await api.deleteRequest(id);
-    } catch {
-      /* ignore */
+      const res = await api.deleteRequest(id);
+      setActionMessage(res.message ?? "Removed.");
+    } catch (e) {
+      setActionMessage(`Couldn't remove: ${errText(e, "try again")}`);
     }
     refresh();
   };
@@ -89,6 +102,7 @@ export function Requests() {
 
   return (
     <>
+      {actionMessage && <div className="toast">{actionMessage}</div>}
       <div className="stack">
         {items.map((req) => {
           const subtitle = [
