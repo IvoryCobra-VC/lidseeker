@@ -3,6 +3,7 @@ import asyncio
 import logging
 import mimetypes
 import os
+from contextlib import asynccontextmanager
 from typing import Optional
 
 import bcrypt
@@ -12,14 +13,33 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import auth, config, db, lidarr, notify, slskd, soularr_cfg, soularr_ctl
+from . import __version__, auth, config, db, lidarr, notify, slskd, soularr_cfg, soularr_ctl
 from .schemas import (
     ActionResult, DiscoverCategories, LoginIn, Me, PasswordChange, RequestIn, RequestOut,
     SearchResult, ServiceLink, Settings, SettingsIn, TokenOut, Track, User, UserCreate,
 )
 
 log = logging.getLogger("lidseeker")
-app = FastAPI(title="lidseeker", version="0.2.0-beta")
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # Startup
+    db.init()
+    db.baseline_notifications()   # don't notify for already-available requests
+    _requeue_stranded_requests()  # recover any add that a restart interrupted
+    # Always run: besides ntfy pushes it also tracks the give-up counter and
+    # cleans up slskd searches, which must happen even if ntfy is disabled.
+    asyncio.create_task(_status_loop())
+    asyncio.create_task(_reconcile_loop())   # keep pending requests monitored
+    try:
+        yield
+    finally:
+        # Shutdown
+        await lidarr.aclose()   # close the shared HTTP client
+
+
+app = FastAPI(title="lidseeker", version=__version__, lifespan=lifespan)
 
 
 @app.exception_handler(httpx.HTTPError)
@@ -37,14 +57,14 @@ app.add_middleware(
 )
 
 
-@app.on_event("startup")
-async def _startup() -> None:
-    db.init()
-    db.baseline_notifications()   # don't notify for already-available requests
-    # Always run: besides ntfy pushes it also tracks the give-up counter and
-    # cleans up slskd searches, which must happen even if ntfy is disabled.
-    asyncio.create_task(_status_loop())
-    asyncio.create_task(_reconcile_loop())   # keep pending requests monitored
+def _requeue_stranded_requests() -> None:
+    """A request whose add task was interrupted by a restart sits 'pending' with
+    nothing in Lidarr forever. Re-dispatch the add for each so it completes."""
+    stranded = db.pending_unprocessed()
+    for row in stranded:
+        asyncio.create_task(_process_request(row["id"], row["type"], row["foreign_id"]))
+    if stranded:
+        log.info("requeued %d request(s) stranded by a restart", len(stranded))
 
 
 async def _status_loop() -> None:
@@ -143,8 +163,18 @@ async def _reconcile_loop() -> None:
 
 
 @app.get("/api/health")
-async def health() -> dict:
-    return {"status": "ok"}
+async def health() -> JSONResponse:
+    """Liveness + DB reachability. Returns 503 (so the Docker healthcheck fails)
+    when the database is unreachable, instead of always claiming 'ok'."""
+    db_ok = db.ping()
+    return JSONResponse(
+        status_code=200 if db_ok else 503,
+        content={
+            "status": "ok" if db_ok else "degraded",
+            "db": db_ok,
+            "version": __version__,
+        },
+    )
 
 
 # --------------------------------------------------------------------------
@@ -158,8 +188,18 @@ async def login(body: LoginIn) -> TokenOut:
     return TokenOut(token=auth.issue_token(user))
 
 
+_MIN_PASSWORD_LEN = 8
+
+
 def _hash(password: str) -> str:
     return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+
+
+def _validate_password(password: str) -> None:
+    if len(password or "") < _MIN_PASSWORD_LEN:
+        raise HTTPException(
+            400, f"Password must be at least {_MIN_PASSWORD_LEN} characters."
+        )
 
 
 @app.get("/api/me", response_model=Me)
@@ -173,9 +213,9 @@ async def change_my_password(
 ) -> dict:
     if not auth.verify_credentials(user.username, body.currentPassword):
         raise HTTPException(400, "Current password is incorrect.")
-    if len(body.newPassword) < 4:
-        raise HTTPException(400, "New password is too short.")
+    _validate_password(body.newPassword)
     db.set_user_password(user.id, _hash(body.newPassword))
+    db.bump_token_version(user.id)   # sign every other session out
     return {"ok": True, "message": "Password changed."}
 
 
@@ -195,8 +235,9 @@ async def create_user(
     body: UserCreate, _admin: auth.CurrentUser = Depends(auth.require_admin)
 ) -> dict:
     username = body.username.strip()
-    if not username or not body.password:
-        raise HTTPException(400, "Username and password are required.")
+    if not username:
+        raise HTTPException(400, "Username is required.")
+    _validate_password(body.password)
     if db.get_user(username):
         raise HTTPException(409, "That username is already taken.")
     u = db.create_user(username, _hash(body.password), body.role)
@@ -225,7 +266,7 @@ async def delete_user(
 async def search(
     term: str = Query(..., min_length=1),
     type: str = Query("album", pattern="^(artist|album|track)$"),
-    _user: str = Depends(auth.require_user),
+    _user: auth.CurrentUser = Depends(auth.require_user),
 ) -> list[dict]:
     if type == "track":
         return await lidarr.search_tracks(term)
@@ -234,14 +275,14 @@ async def search(
 
 @app.get("/api/artist/{foreign_id}/albums", response_model=list[SearchResult])
 async def artist_albums(
-    foreign_id: str, _user: str = Depends(auth.require_user)
+    foreign_id: str, _user: auth.CurrentUser = Depends(auth.require_user)
 ) -> list[dict]:
     return await lidarr.artist_albums(foreign_id)
 
 
 @app.get("/api/album/{foreign_id}/tracks", response_model=list[Track])
 async def album_tracks(
-    foreign_id: str, _user: str = Depends(auth.require_user)
+    foreign_id: str, _user: auth.CurrentUser = Depends(auth.require_user)
 ) -> list[dict]:
     """Tracklist for an album (for the expandable song view)."""
     return await lidarr.album_tracks(foreign_id)
@@ -276,12 +317,8 @@ async def _process_request(req_id: int, type: str, foreign_id: str) -> None:
         )
     except Exception as e:  # noqa: BLE001 — surface failure on the request row
         log.exception("request %s failed", req_id)
-        db.update_status(req_id, "error")
-        db.upsert_request(
-            type=type, foreign_id=foreign_id, title="", artist=None,
-            image_url=None, lidarr_artist_id=None, lidarr_album_id=None,
-            status="error", error=str(e),
-        )
+        # Keep the title/art shown on the row — just flag the error + offer Retry.
+        db.set_request_error(req_id, str(e))
 
 
 @app.post("/api/request", response_model=RequestOut)
@@ -322,31 +359,43 @@ async def create_request(
     return _to_out(row)
 
 
+# Resolve at most this many requests' live status concurrently. Bounds the burst
+# of Lidarr/slskd calls when someone has a long request list.
+_REQUESTS_CONCURRENCY = 8
+
+
 @app.get("/api/requests", response_model=list[RequestOut])
 async def list_requests(user: auth.CurrentUser = Depends(auth.require_user)) -> list[dict]:
     # Admins see everyone's requests (with the requester shown); others see only theirs.
     rows = db.list_requests() if user.is_admin else db.list_requests(user_id=user.id)
     names = db.usernames_by_id() if user.is_admin else {}
-    out = []
-    for row in rows:
-        # Refresh live status from Lidarr for resolved requests. 'error' and
-        # 'failed' are terminal — don't let a 0% album flip them back to pending.
-        if row["status"] not in ("error", "failed") and (
-            row["lidarr_album_id"] or row["lidarr_artist_id"]
-        ):
-            live = await lidarr.request_status(
-                row["lidarr_album_id"], row["lidarr_artist_id"]
+    # Fetch Lidarr's download queue ONCE for the whole batch (not per row).
+    queue_index = await lidarr.queue_index()
+    sem = asyncio.Semaphore(_REQUESTS_CONCURRENCY)
+
+    async def _resolve(row: dict) -> dict:
+        async with sem:
+            # Refresh live status from Lidarr for resolved requests. 'error' and
+            # 'failed' are terminal — don't let a 0% album flip them back to pending.
+            if row["status"] not in ("error", "failed") and (
+                row["lidarr_album_id"] or row["lidarr_artist_id"]
+            ):
+                live = await lidarr.request_status(
+                    row["lidarr_album_id"], row["lidarr_artist_id"]
+                )
+                if live != row["status"]:
+                    db.update_status(row["id"], live)
+                    row["status"] = live
+            # Detailed pipeline for the expandable My Requests view.
+            pipeline = await lidarr.request_pipeline(
+                row["lidarr_album_id"], row["lidarr_artist_id"],
+                row["artist"], row["status"], row["created_at"],
+                queue_index=queue_index,
             )
-            if live != row["status"]:
-                db.update_status(row["id"], live)
-                row["status"] = live
-        # Detailed pipeline for the expandable My Requests view.
-        pipeline = await lidarr.request_pipeline(
-            row["lidarr_album_id"], row["lidarr_artist_id"],
-            row["artist"], row["status"], row["created_at"],
-        )
-        out.append(_to_out(row, pipeline, requested_by=names.get(row.get("user_id"))))
-    return out
+            return _to_out(row, pipeline, requested_by=names.get(row.get("user_id")))
+
+    # gather preserves input order, so rows stay newest-first.
+    return await asyncio.gather(*(_resolve(row) for row in rows))
 
 
 @app.delete("/api/requests/{rid}", response_model=ActionResult)
@@ -358,43 +407,56 @@ async def delete_request(rid: int, user: auth.CurrentUser = Depends(auth.require
     if not user.is_admin and existing.get("user_id") != user.id:
         raise HTTPException(403, "That isn't your request.")
     row = db.delete_request(rid)
+    warn = ""
     if row["lidarr_album_id"]:
         try:
             await lidarr.set_album_monitored([row["lidarr_album_id"]], False)
-        except httpx.HTTPError:
-            pass
-    return {"ok": True, "message": "Request removed."}
+        except httpx.HTTPError as e:
+            log.warning("delete_request %s: couldn't unmonitor album in Lidarr: %s", rid, e)
+            warn = " (couldn't reach Lidarr to unmonitor it — it may still be wanted)"
+    return {"ok": True, "message": "Request removed." + warn}
 
 
 @app.post("/api/requests/{rid}/retry", response_model=ActionResult)
-async def retry_request(rid: int, user: auth.CurrentUser = Depends(auth.require_user)) -> dict:
+async def retry_request(
+    rid: int, background: BackgroundTasks,
+    user: auth.CurrentUser = Depends(auth.require_user),
+) -> dict:
     """Un-stick a failed/stuck request: clear Soularr's denylist entry, re-monitor,
-    re-search, and force a Soularr run."""
+    re-search, and force a Soularr run. If the request never made it into Lidarr,
+    re-run the whole add pipeline."""
     row = db.get_request(rid)
     if not row:
         raise HTTPException(404, "Request not found")
     if not user.is_admin and row.get("user_id") != user.id:
         raise HTTPException(403, "That isn't your request.")
     soularr_cfg.clear_denylist_entry(row["lidarr_album_id"])
-    if row["lidarr_album_id"]:
-        try:
-            await lidarr.set_album_monitored([row["lidarr_album_id"]], True)
-            if row["lidarr_artist_id"]:
-                await lidarr.set_artist_monitored(row["lidarr_artist_id"], True)
-            await lidarr.album_search([row["lidarr_album_id"]])
-        except httpx.HTTPError:
-            pass
-    # Reset the give-up counter and revive a terminal request so it searches anew.
     db.reset_search_attempts(rid)
+
+    # Never got added to Lidarr (errored before the album resolved) — re-add it.
+    if not row["lidarr_album_id"]:
+        db.update_status(rid, "pending")
+        background.add_task(_process_request, rid, row["type"], row["foreign_id"])
+        return {"ok": True, "message": "Retrying — re-adding to Lidarr."}
+
+    # Re-monitor + re-search. Surface a real error instead of a false "Retrying!".
+    try:
+        await lidarr.set_album_monitored([row["lidarr_album_id"]], True)
+        if row["lidarr_artist_id"]:
+            await lidarr.set_artist_monitored(row["lidarr_artist_id"], True)
+        await lidarr.album_search([row["lidarr_album_id"]])
+    except httpx.HTTPError as e:
+        log.warning("retry_request %s: Lidarr re-monitor/search failed: %s", rid, e)
+        raise HTTPException(503, "Couldn't reach Lidarr to retry — try again shortly.") from e
     if row["status"] in ("error", "failed"):
         db.update_status(rid, "pending")
-    # Soularr adapter only: kick its cycle now. Native clients already picked up
-    # the AlbumSearch above.
+    # Soularr adapter only: kick its cycle now. The AlbumSearch above already
+    # nudged native clients, so a failed restart here is non-fatal — just log it.
     if config.SOULARR_ENABLED:
         try:
             await soularr_ctl.trigger_run()
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as e:  # noqa: BLE001
+            log.warning("retry_request %s: Soularr trigger failed: %s", rid, e)
     return {"ok": True, "message": "Retrying — searching again now."}
 
 
@@ -402,7 +464,7 @@ async def retry_request(rid: int, user: auth.CurrentUser = Depends(auth.require_
 async def discover_categories(
     genre: Optional[str] = Query(None),
     decade: Optional[int] = Query(None),
-    _user: str = Depends(auth.require_user),
+    _user: auth.CurrentUser = Depends(auth.require_user),
 ) -> dict:
     """Genre + decade chips for the Discover tab, each conditioned on the other
     active filter so the chips only offer combinations that have results."""
@@ -413,7 +475,7 @@ async def discover_categories(
 async def discover(
     genre: Optional[str] = Query(None),
     decade: Optional[int] = Query(None),
-    _user: str = Depends(auth.require_user),
+    _user: auth.CurrentUser = Depends(auth.require_user),
 ) -> list[dict]:
     """Unowned releases from artists in your library. No filter → newest first;
     a `genre` or `decade` browses that category instead."""
@@ -421,17 +483,19 @@ async def discover(
 
 
 @app.get("/api/settings", response_model=Settings)
-async def get_settings(_user: str = Depends(auth.require_user)) -> dict:
+async def get_settings(user: auth.CurrentUser = Depends(auth.require_user)) -> dict:
+    # The ntfy topic is a shared secret (anyone with it reads the notifications),
+    # so only admins see it — non-admins get nulls.
     return {
         "quality": soularr_cfg.get_quality(),
-        "ntfyTopic": config.NTFY_TOPIC or None,
-        "ntfyUrl": config.NTFY_URL or None,
+        "ntfyTopic": (config.NTFY_TOPIC or None) if user.is_admin else None,
+        "ntfyUrl": (config.NTFY_URL or None) if user.is_admin else None,
     }
 
 
 @app.put("/api/settings", response_model=ActionResult)
 async def put_settings(
-    body: SettingsIn, _user: str = Depends(auth.require_user)
+    body: SettingsIn, _user: auth.CurrentUser = Depends(auth.require_user)
 ) -> dict:
     if not config.SOULARR_ENABLED:
         raise HTTPException(409, "Quality control is only available with the Soularr adapter.")
@@ -442,13 +506,18 @@ async def put_settings(
     if changed:
         try:
             await soularr_ctl.trigger_run()   # restart Soularr to apply
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as e:  # noqa: BLE001
+            log.warning("put_settings: Soularr restart failed: %s", e)
+            return {
+                "ok": True,
+                "message": f"Quality set to {body.quality.upper()}, but Soularr "
+                           "didn't restart — it'll apply on the next cycle.",
+            }
     return {"ok": True, "message": f"Quality set to {body.quality.upper()}."}
 
 
 @app.get("/api/services", response_model=list[ServiceLink])
-async def services(_user: str = Depends(auth.require_user)) -> list[dict]:
+async def services(_user: auth.CurrentUser = Depends(auth.require_user)) -> list[dict]:
     """Links to the pipeline services (from SERVICE_LINKS), shown under a request."""
     return config.SERVICE_LINKS
 
@@ -474,7 +543,7 @@ async def _search_now() -> None:
 
 @app.post("/api/search-now", response_model=ActionResult)
 @app.post("/api/soularr/run", response_model=ActionResult)  # legacy alias
-async def search_now(_user: str = Depends(auth.require_user)) -> dict:
+async def search_now(_user: auth.CurrentUser = Depends(auth.require_user)) -> dict:
     """Force a search now instead of waiting for the next cycle."""
     try:
         await _search_now()

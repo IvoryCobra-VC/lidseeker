@@ -42,6 +42,7 @@ def issue_token(user: dict) -> str:
         "sub": user["username"],
         "uid": user["id"],
         "role": user["role"],
+        "ver": user.get("token_version", 0),   # bumped to revoke old tokens
         "iat": now,
         "exp": now + timedelta(hours=config.JWT_TTL_HOURS),
     }
@@ -55,10 +56,16 @@ def require_user(creds: HTTPAuthorizationCredentials = Depends(_bearer)) -> Curr
         payload = jwt.decode(creds.credentials, config.JWT_SECRET, algorithms=["HS256"])
     except jwt.PyJWTError:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired token") from None
+    # Re-validate against the DB every request: a deleted user, a demoted role,
+    # or a bumped token_version (password change) invalidates the token now,
+    # rather than letting it ride until the (long) expiry.
+    user = db.get_user_by_id(payload.get("uid"))
+    if not user or user["token_version"] != payload.get("ver", 0):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Session expired — please sign in again.")
     return CurrentUser(
-        id=payload.get("uid"),
-        username=payload["sub"],
-        role=payload.get("role", "user"),
+        id=user["id"],
+        username=user["username"],
+        role=user["role"],          # DB-fresh, not whatever the token claimed
     )
 
 
