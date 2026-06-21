@@ -41,10 +41,21 @@ app.add_middleware(
 async def _startup() -> None:
     db.init()
     db.baseline_notifications()   # don't notify for already-available requests
+    _requeue_stranded_requests()  # recover any add that a restart interrupted
     # Always run: besides ntfy pushes it also tracks the give-up counter and
     # cleans up slskd searches, which must happen even if ntfy is disabled.
     asyncio.create_task(_status_loop())
     asyncio.create_task(_reconcile_loop())   # keep pending requests monitored
+
+
+def _requeue_stranded_requests() -> None:
+    """A request whose add task was interrupted by a restart sits 'pending' with
+    nothing in Lidarr forever. Re-dispatch the add for each so it completes."""
+    stranded = db.pending_unprocessed()
+    for row in stranded:
+        asyncio.create_task(_process_request(row["id"], row["type"], row["foreign_id"]))
+    if stranded:
+        log.info("requeued %d request(s) stranded by a restart", len(stranded))
 
 
 @app.on_event("shutdown")
@@ -148,8 +159,14 @@ async def _reconcile_loop() -> None:
 
 
 @app.get("/api/health")
-async def health() -> dict:
-    return {"status": "ok"}
+async def health() -> JSONResponse:
+    """Liveness + DB reachability. Returns 503 (so the Docker healthcheck fails)
+    when the database is unreachable, instead of always claiming 'ok'."""
+    db_ok = db.ping()
+    return JSONResponse(
+        status_code=200 if db_ok else 503,
+        content={"status": "ok" if db_ok else "degraded", "db": db_ok},
+    )
 
 
 # --------------------------------------------------------------------------
@@ -163,8 +180,18 @@ async def login(body: LoginIn) -> TokenOut:
     return TokenOut(token=auth.issue_token(user))
 
 
+_MIN_PASSWORD_LEN = 8
+
+
 def _hash(password: str) -> str:
     return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+
+
+def _validate_password(password: str) -> None:
+    if len(password or "") < _MIN_PASSWORD_LEN:
+        raise HTTPException(
+            400, f"Password must be at least {_MIN_PASSWORD_LEN} characters."
+        )
 
 
 @app.get("/api/me", response_model=Me)
@@ -178,9 +205,9 @@ async def change_my_password(
 ) -> dict:
     if not auth.verify_credentials(user.username, body.currentPassword):
         raise HTTPException(400, "Current password is incorrect.")
-    if len(body.newPassword) < 4:
-        raise HTTPException(400, "New password is too short.")
+    _validate_password(body.newPassword)
     db.set_user_password(user.id, _hash(body.newPassword))
+    db.bump_token_version(user.id)   # sign every other session out
     return {"ok": True, "message": "Password changed."}
 
 
@@ -200,8 +227,9 @@ async def create_user(
     body: UserCreate, _admin: auth.CurrentUser = Depends(auth.require_admin)
 ) -> dict:
     username = body.username.strip()
-    if not username or not body.password:
-        raise HTTPException(400, "Username and password are required.")
+    if not username:
+        raise HTTPException(400, "Username is required.")
+    _validate_password(body.password)
     if db.get_user(username):
         raise HTTPException(409, "That username is already taken.")
     u = db.create_user(username, _hash(body.password), body.role)
@@ -281,12 +309,8 @@ async def _process_request(req_id: int, type: str, foreign_id: str) -> None:
         )
     except Exception as e:  # noqa: BLE001 — surface failure on the request row
         log.exception("request %s failed", req_id)
-        db.update_status(req_id, "error")
-        db.upsert_request(
-            type=type, foreign_id=foreign_id, title="", artist=None,
-            image_url=None, lidarr_artist_id=None, lidarr_album_id=None,
-            status="error", error=str(e),
-        )
+        # Keep the title/art shown on the row — just flag the error + offer Retry.
+        db.set_request_error(req_id, str(e))
 
 
 @app.post("/api/request", response_model=RequestOut)
@@ -375,43 +399,56 @@ async def delete_request(rid: int, user: auth.CurrentUser = Depends(auth.require
     if not user.is_admin and existing.get("user_id") != user.id:
         raise HTTPException(403, "That isn't your request.")
     row = db.delete_request(rid)
+    warn = ""
     if row["lidarr_album_id"]:
         try:
             await lidarr.set_album_monitored([row["lidarr_album_id"]], False)
-        except httpx.HTTPError:
-            pass
-    return {"ok": True, "message": "Request removed."}
+        except httpx.HTTPError as e:
+            log.warning("delete_request %s: couldn't unmonitor album in Lidarr: %s", rid, e)
+            warn = " (couldn't reach Lidarr to unmonitor it — it may still be wanted)"
+    return {"ok": True, "message": "Request removed." + warn}
 
 
 @app.post("/api/requests/{rid}/retry", response_model=ActionResult)
-async def retry_request(rid: int, user: auth.CurrentUser = Depends(auth.require_user)) -> dict:
+async def retry_request(
+    rid: int, background: BackgroundTasks,
+    user: auth.CurrentUser = Depends(auth.require_user),
+) -> dict:
     """Un-stick a failed/stuck request: clear Soularr's denylist entry, re-monitor,
-    re-search, and force a Soularr run."""
+    re-search, and force a Soularr run. If the request never made it into Lidarr,
+    re-run the whole add pipeline."""
     row = db.get_request(rid)
     if not row:
         raise HTTPException(404, "Request not found")
     if not user.is_admin and row.get("user_id") != user.id:
         raise HTTPException(403, "That isn't your request.")
     soularr_cfg.clear_denylist_entry(row["lidarr_album_id"])
-    if row["lidarr_album_id"]:
-        try:
-            await lidarr.set_album_monitored([row["lidarr_album_id"]], True)
-            if row["lidarr_artist_id"]:
-                await lidarr.set_artist_monitored(row["lidarr_artist_id"], True)
-            await lidarr.album_search([row["lidarr_album_id"]])
-        except httpx.HTTPError:
-            pass
-    # Reset the give-up counter and revive a terminal request so it searches anew.
     db.reset_search_attempts(rid)
+
+    # Never got added to Lidarr (errored before the album resolved) — re-add it.
+    if not row["lidarr_album_id"]:
+        db.update_status(rid, "pending")
+        background.add_task(_process_request, rid, row["type"], row["foreign_id"])
+        return {"ok": True, "message": "Retrying — re-adding to Lidarr."}
+
+    # Re-monitor + re-search. Surface a real error instead of a false "Retrying!".
+    try:
+        await lidarr.set_album_monitored([row["lidarr_album_id"]], True)
+        if row["lidarr_artist_id"]:
+            await lidarr.set_artist_monitored(row["lidarr_artist_id"], True)
+        await lidarr.album_search([row["lidarr_album_id"]])
+    except httpx.HTTPError as e:
+        log.warning("retry_request %s: Lidarr re-monitor/search failed: %s", rid, e)
+        raise HTTPException(503, "Couldn't reach Lidarr to retry — try again shortly.") from e
     if row["status"] in ("error", "failed"):
         db.update_status(rid, "pending")
-    # Soularr adapter only: kick its cycle now. Native clients already picked up
-    # the AlbumSearch above.
+    # Soularr adapter only: kick its cycle now. The AlbumSearch above already
+    # nudged native clients, so a failed restart here is non-fatal — just log it.
     if config.SOULARR_ENABLED:
         try:
             await soularr_ctl.trigger_run()
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as e:  # noqa: BLE001
+            log.warning("retry_request %s: Soularr trigger failed: %s", rid, e)
     return {"ok": True, "message": "Retrying — searching again now."}
 
 
@@ -438,11 +475,13 @@ async def discover(
 
 
 @app.get("/api/settings", response_model=Settings)
-async def get_settings(_user: str = Depends(auth.require_user)) -> dict:
+async def get_settings(user: auth.CurrentUser = Depends(auth.require_user)) -> dict:
+    # The ntfy topic is a shared secret (anyone with it reads the notifications),
+    # so only admins see it — non-admins get nulls.
     return {
         "quality": soularr_cfg.get_quality(),
-        "ntfyTopic": config.NTFY_TOPIC or None,
-        "ntfyUrl": config.NTFY_URL or None,
+        "ntfyTopic": (config.NTFY_TOPIC or None) if user.is_admin else None,
+        "ntfyUrl": (config.NTFY_URL or None) if user.is_admin else None,
     }
 
 
@@ -459,8 +498,13 @@ async def put_settings(
     if changed:
         try:
             await soularr_ctl.trigger_run()   # restart Soularr to apply
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as e:  # noqa: BLE001
+            log.warning("put_settings: Soularr restart failed: %s", e)
+            return {
+                "ok": True,
+                "message": f"Quality set to {body.quality.upper()}, but Soularr "
+                           "didn't restart — it'll apply on the next cycle.",
+            }
     return {"ok": True, "message": f"Quality set to {body.quality.upper()}."}
 
 
