@@ -50,7 +50,7 @@ if not APP_PASS_HASH and APP_PASSWORD:
     import bcrypt
     APP_PASS_HASH = bcrypt.hashpw(APP_PASSWORD.encode(), bcrypt.gensalt()).decode()
 JWT_SECRET = os.environ.get("JWT_SECRET", "change-me")
-JWT_TTL_HOURS = int(os.environ.get("JWT_TTL_HOURS", "720"))  # 30 days
+JWT_TTL_HOURS = int(os.environ.get("JWT_TTL_HOURS", "48"))  # 2 days
 
 # --- slskd (Soulseek daemon — for live download progress in the request pipeline) ---
 SLSKD_URL = os.environ.get("SLSKD_URL", "http://localhost:5030").rstrip("/")

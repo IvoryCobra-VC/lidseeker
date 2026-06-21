@@ -33,13 +33,15 @@ def test_verify_credentials(tmp_path, monkeypatch):
 
 
 def test_token_roundtrip(tmp_path, monkeypatch):
-    _fresh_db(tmp_path, monkeypatch)
+    db = _fresh_db(tmp_path, monkeypatch)
     monkeypatch.setattr(config, "JWT_SECRET", "test-secret")
-    token = auth.issue_token({"username": "alice", "id": 7, "role": "admin"})
+    # require_user now validates the token against the DB, so the user must exist.
+    u = db.create_user("alice", bcrypt.hashpw(b"hunter2", bcrypt.gensalt()).decode(), "admin")
+    token = auth.issue_token(u)
     creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
     cu = auth.require_user(creds)
     assert cu.username == "alice"
-    assert cu.id == 7
+    assert cu.id == u["id"]
     assert cu.is_admin
 
 

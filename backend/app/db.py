@@ -30,14 +30,28 @@ CREATE TABLE IF NOT EXISTS users (
     username      TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
     role          TEXT NOT NULL DEFAULT 'user',
-    created_at    TEXT NOT NULL
+    created_at    TEXT NOT NULL,
+    token_version INTEGER NOT NULL DEFAULT 0
 );
 """
+
+
+def ping() -> bool:
+    """True if the database is reachable — backs an honest /api/health."""
+    try:
+        with _conn() as c:
+            c.execute("SELECT 1")
+        return True
+    except sqlite3.Error:
+        return False
 
 
 def init() -> None:
     os.makedirs(os.path.dirname(config.DB_PATH), exist_ok=True)
     with _conn() as c:
+        # WAL lets the background loops read/write without blocking request
+        # handlers (and vice-versa); it's a persistent DB property, set once.
+        c.execute("PRAGMA journal_mode=WAL")
         c.executescript(_SCHEMA)
         # Lightweight migration for existing DBs.
         cols = {r[1] for r in c.execute("PRAGMA table_info(requests)")}
@@ -49,6 +63,11 @@ def init() -> None:
             c.execute("ALTER TABLE requests ADD COLUMN last_attempt_at TEXT")
         if "user_id" not in cols:
             c.execute("ALTER TABLE requests ADD COLUMN user_id INTEGER")
+        ucols = {r[1] for r in c.execute("PRAGMA table_info(users)")}
+        if "token_version" not in ucols:
+            c.execute(
+                "ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0"
+            )
     seed_admin_from_env()
 
 
@@ -71,7 +90,9 @@ def seed_admin_from_env() -> None:
 
 @contextmanager
 def _conn():
-    conn = sqlite3.connect(config.DB_PATH)
+    # timeout is SQLite's busy-timeout: wait up to 10s for a lock instead of
+    # raising "database is locked" immediately under concurrent writers.
+    conn = sqlite3.connect(config.DB_PATH, timeout=10.0)
     conn.row_factory = sqlite3.Row
     try:
         yield conn
@@ -128,6 +149,16 @@ def update_status(request_id: int, status: str) -> None:
         c.execute("UPDATE requests SET status=? WHERE id=?", (status, request_id))
 
 
+def set_request_error(request_id: int, message: str) -> None:
+    """Mark a request errored WITHOUT clobbering its title/art (so the row still
+    shows what was requested, with a Retry)."""
+    with _conn() as c:
+        c.execute(
+            "UPDATE requests SET status='error', error=? WHERE id=?",
+            (message, request_id),
+        )
+
+
 def get_request(request_id: int) -> dict | None:
     with _conn() as c:
         row = c.execute("SELECT * FROM requests WHERE id=?", (request_id,)).fetchone()
@@ -178,6 +209,18 @@ def unnotified_available() -> list[dict]:
     with _conn() as c:
         rows = c.execute(
             "SELECT * FROM requests WHERE status='available' AND notified=0"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def pending_unprocessed() -> list[dict]:
+    """Requests still 'pending' with nothing added to Lidarr yet — i.e. their
+    add task never finished (the container restarted mid-add). Used to requeue
+    them on startup so they can't be stranded forever."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT * FROM requests WHERE status='pending' AND lidarr_album_id IS NULL "
+            "AND lidarr_artist_id IS NULL"
         ).fetchall()
         return [dict(r) for r in rows]
 
@@ -249,3 +292,12 @@ def count_admins() -> int:
 def set_user_password(user_id: int, password_hash: str) -> None:
     with _conn() as c:
         c.execute("UPDATE users SET password_hash=? WHERE id=?", (password_hash, user_id))
+
+
+def bump_token_version(user_id: int) -> None:
+    """Invalidate every existing JWT for this user (e.g. after a password
+    change). require_user checks the token's version against this value."""
+    with _conn() as c:
+        c.execute(
+            "UPDATE users SET token_version = token_version + 1 WHERE id=?", (user_id,)
+        )
