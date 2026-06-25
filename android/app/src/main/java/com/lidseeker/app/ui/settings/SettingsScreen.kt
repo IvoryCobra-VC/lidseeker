@@ -6,13 +6,18 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
@@ -28,6 +33,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -50,6 +57,15 @@ class SettingsViewModel(private val repo: Repository) : ViewModel() {
     var saving by mutableStateOf(false)
         private set
     var message by mutableStateOf<String?>(null)
+        private set
+    // Password change
+    var pwCurrent by mutableStateOf("")
+    var pwNew by mutableStateOf("")
+    var pwSaving by mutableStateOf(false)
+        private set
+    var pwMessage by mutableStateOf<String?>(null)
+        private set
+    var pwSuccess by mutableStateOf(false)
         private set
 
     fun load() {
@@ -80,6 +96,26 @@ class SettingsViewModel(private val repo: Repository) : ViewModel() {
                 "Couldn't change quality"
             } finally {
                 saving = false
+            }
+        }
+    }
+
+    fun changePassword() {
+        if (pwSaving || pwCurrent.isBlank() || pwNew.length < 8) return
+        pwSaving = true
+        pwMessage = null
+        viewModelScope.launch {
+            try {
+                val res = repo.changePassword(pwCurrent, pwNew)
+                pwSuccess = true
+                pwMessage = res.message ?: "Password changed."
+                pwCurrent = ""
+                pwNew = ""
+            } catch (e: Exception) {
+                pwSuccess = false
+                pwMessage = e.message ?: "Couldn't change password"
+            } finally {
+                pwSaving = false
             }
         }
     }
@@ -116,7 +152,11 @@ fun SettingsScreen(onBack: () -> Unit) {
             return@Scaffold
         }
         Column(
-            Modifier.fillMaxSize().padding(inner).padding(16.dp),
+            Modifier
+                .fillMaxSize()
+                .padding(inner)
+                .padding(16.dp)
+                .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             // --- Quality (only when the backend's Soularr adapter exposes it) ---
@@ -148,6 +188,48 @@ fun SettingsScreen(onBack: () -> Unit) {
                     }
                 }
             }
+            }
+
+            // --- Change password ---
+            AppCard(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Change password", style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold)
+                    OutlinedTextField(
+                        value = vm.pwCurrent,
+                        onValueChange = { vm.pwCurrent = it },
+                        label = { Text("Current password") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedTextField(
+                        value = vm.pwNew,
+                        onValueChange = { vm.pwNew = it },
+                        label = { Text("New password (min 8 chars)") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Button(
+                        onClick = { vm.changePassword() },
+                        enabled = !vm.pwSaving && vm.pwCurrent.isNotBlank() && vm.pwNew.length >= 8,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        if (vm.pwSaving) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        else Text(if (vm.pwSaving) "Saving…" else "Update password")
+                    }
+                    vm.pwMessage?.let {
+                        Text(
+                            it,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = if (vm.pwSuccess) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.error,
+                        )
+                    }
+                }
             }
 
             // --- Notifications ---

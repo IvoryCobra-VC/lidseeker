@@ -6,6 +6,7 @@ import type {
   MusicRequest,
   SearchResult,
   ServiceLink,
+  StatsOut,
   Track,
   User,
 } from "./types";
@@ -131,4 +132,11 @@ export const api = {
     }),
 
   deleteUser: (id: number) => req<ActionResult>(`/users/${id}`, { method: "DELETE" }),
+
+  stats: () => req<StatsOut>("/stats"),
+
+  clearAvailable: () => req<ActionResult>("/requests/clear-available", { method: "POST" }),
+
+  searchRequestNow: (id: number) =>
+    req<ActionResult>(`/requests/${id}/search-now`, { method: "POST" }),
 };

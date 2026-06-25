@@ -88,4 +88,13 @@ class Repository(private val settings: Settings) {
     suspend fun getSettings(): AppSettings = api.getSettings()
 
     suspend fun setQuality(quality: String): ActionResult = api.putSettings(SettingsBody(quality))
+
+    suspend fun changePassword(current: String, newPassword: String): ActionResult =
+        api.changePassword(PasswordChangeBody(current, newPassword))
+
+    suspend fun clearAvailable(): ActionResult = api.clearAvailable()
+
+    suspend fun searchRequestNow(id: Int): ActionResult = api.searchRequestNow(id)
+
+    suspend fun stats(): StatsOut = api.stats()
 }

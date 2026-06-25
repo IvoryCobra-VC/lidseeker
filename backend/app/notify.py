@@ -20,10 +20,9 @@ async def publish(title: str, message: str, tag: str = "tada") -> None:
     if not enabled():
         return
     url = f"{config.NTFY_URL}/{config.NTFY_TOPIC}"
-    # HTTP headers must be Latin-1 — an emoji in the Title (e.g. "🎵") raises
-    # UnicodeEncodeError and, uncaught, kills the notify loop. Keep the header
-    # ASCII-safe; the emoji can live in the UTF-8 body instead.
-    safe_title = title.encode("ascii", "ignore").decode("ascii").strip() or "lidseeker"
+    # HTTP headers must be Latin-1 — emojis in the Title header raise
+    # UnicodeEncodeError. Strip non-Latin-1 chars; the emoji belongs in the body.
+    safe_title = title.encode("latin-1", "ignore").decode("latin-1").strip() or "lidseeker"
     try:
         async with httpx.AsyncClient(timeout=10.0) as c:
             await c.post(

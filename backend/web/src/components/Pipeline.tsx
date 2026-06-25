@@ -27,7 +27,6 @@ export function Pipeline({
   onRemove,
   retrying,
   searching,
-  searchMessage,
 }: {
   pipeline: PipelineT;
   services: ServiceLink[];
@@ -36,13 +35,13 @@ export function Pipeline({
   onRemove: () => void;
   retrying: boolean;
   searching: boolean;
-  searchMessage?: string | null;
 }) {
   const showBar =
     pipeline.stage === "downloading" ||
     pipeline.stage === "importing" ||
     (pipeline.percent > 0 && pipeline.percent < 100);
   const canSearch = pipeline.stage !== "available" && !pipeline.failed && !pipeline.stuck;
+  const isAvailable = pipeline.stage === "available";
 
   return (
     <div className="pipeline">
@@ -68,6 +67,22 @@ export function Pipeline({
         </div>
       )}
 
+      {/* Service links shown prominently when available, inline otherwise */}
+      {isAvailable && services.length > 0 && (
+        <div className="linkchips" style={{ marginTop: 10 }}>
+          <span className="muted" style={{ alignSelf: "center", fontSize: 12 }}>Play in</span>
+          {services.map((s) => {
+            const href = safeHref(s.url);
+            if (!href) return null;
+            return (
+              <a className="chip on" key={s.name} href={href} target="_blank" rel="noreferrer">
+                {s.name} ↗
+              </a>
+            );
+          })}
+        </div>
+      )}
+
       <div className="btnrow">
         {(pipeline.failed || pipeline.stuck) && (
           <button className="btn small primary" onClick={onRetry} disabled={retrying}>
@@ -83,13 +98,10 @@ export function Pipeline({
           Remove
         </button>
       </div>
-      {searchMessage && <div className="toast">{searchMessage}</div>}
 
-      {services.length > 0 && (
+      {!isAvailable && services.length > 0 && (
         <div className="linkchips">
-          <span className="muted" style={{ alignSelf: "center", fontSize: 12 }}>
-            Open in
-          </span>
+          <span className="muted" style={{ alignSelf: "center", fontSize: 12 }}>Open in</span>
           {services.map((s) => {
             const href = safeHref(s.url);
             if (!href) return null;

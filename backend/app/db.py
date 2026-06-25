@@ -25,6 +25,8 @@ CREATE TABLE IF NOT EXISTS requests (
     UNIQUE(type, foreign_id)
 );
 
+CREATE INDEX IF NOT EXISTS idx_requests_status ON requests(status);
+
 CREATE TABLE IF NOT EXISTS users (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     username      TEXT NOT NULL UNIQUE,
@@ -63,6 +65,8 @@ def init() -> None:
             c.execute("ALTER TABLE requests ADD COLUMN last_attempt_at TEXT")
         if "user_id" not in cols:
             c.execute("ALTER TABLE requests ADD COLUMN user_id INTEGER")
+        # user_id index added after column exists (safe as CREATE INDEX IF NOT EXISTS).
+        c.execute("CREATE INDEX IF NOT EXISTS idx_requests_user_id ON requests(user_id)")
         ucols = {r[1] for r in c.execute("PRAGMA table_info(users)")}
         if "token_version" not in ucols:
             c.execute(
@@ -234,6 +238,35 @@ def active_request_foreign_ids() -> set[str]:
             "SELECT foreign_id FROM requests WHERE status NOT IN ('error', 'failed')"
         ).fetchall()
         return {r["foreign_id"] for r in rows}
+
+
+def delete_available(user_id: int | None = None) -> int:
+    """Delete all 'available' requests. If user_id is given, only that user's."""
+    with _conn() as c:
+        if user_id is None:
+            cur = c.execute("DELETE FROM requests WHERE status='available'")
+        else:
+            cur = c.execute(
+                "DELETE FROM requests WHERE status='available' AND user_id=?", (user_id,)
+            )
+        return cur.rowcount
+
+
+def request_stats() -> dict:
+    """Counts per status for the dashboard summary."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT status, COUNT(*) AS n FROM requests GROUP BY status"
+        ).fetchall()
+    counts = {r["status"]: r["n"] for r in rows}
+    total = sum(counts.values())
+    return {
+        "total": total,
+        "available": counts.get("available", 0),
+        "pending": counts.get("pending", 0),
+        "downloading": counts.get("downloading", 0),
+        "failed": counts.get("failed", 0) + counts.get("error", 0),
+    }
 
 
 # --------------------------------------------------------------------------

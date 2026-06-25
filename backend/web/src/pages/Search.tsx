@@ -18,6 +18,8 @@ export function Search() {
   const [searched, setSearched] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [reqState, setReqState] = useState<Record<string, ReqState>>({});
+  // Track requests: show a confirmation dialog before requesting the parent album.
+  const [confirmTrack, setConfirmTrack] = useState<SearchResult | null>(null);
 
   const run = async (t: Tab = tab) => {
     if (!term.trim()) return;
@@ -26,8 +28,8 @@ export function Search() {
     try {
       const res = await api.search(term.trim(), t);
       setResults(res);
-    } catch (e: any) {
-      setError(e.message || "Search failed");
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Search failed");
       setResults([]);
     } finally {
       setLoading(false);
@@ -42,7 +44,7 @@ export function Search() {
     if (term.trim()) run(t);
   };
 
-  const request = async (r: SearchResult) => {
+  const doRequest = async (r: SearchResult) => {
     setReqState((s) => ({ ...s, [r.foreignId]: "loading" }));
     try {
       const body =
@@ -53,6 +55,15 @@ export function Search() {
       setReqState((s) => ({ ...s, [r.foreignId]: res.status === "error" ? "error" : "done" }));
     } catch {
       setReqState((s) => ({ ...s, [r.foreignId]: "error" }));
+    }
+  };
+
+  const request = (r: SearchResult) => {
+    if (r.type === "track") {
+      // Track requests add the full album — warn the user first.
+      setConfirmTrack(r);
+    } else {
+      doRequest(r);
     }
   };
 
@@ -103,18 +114,55 @@ export function Search() {
                 key={r.foreignId}
                 imageUrl={r.imageUrl}
                 title={r.title}
-                subtitle={[r.artist, r.albumTitle, r.year].filter(Boolean).join(" · ")}
+                subtitle={[
+                  r.inLibrary ? null : null,
+                  r.artist,
+                  r.albumTitle,
+                  r.year,
+                ].filter(Boolean).join(" · ")}
                 trailing={
-                  <RequestButton
-                    inLibrary={r.inLibrary}
-                    requested={r.requested}
-                    state={reqState[r.foreignId] ?? "idle"}
-                    onClick={() => request(r)}
-                  />
+                  r.inLibrary ? (
+                    <span className="statuschip available">In library</span>
+                  ) : (
+                    <RequestButton
+                      inLibrary={false}
+                      requested={r.requested}
+                      state={reqState[r.foreignId] ?? "idle"}
+                      onClick={() => request(r)}
+                    />
+                  )
                 }
               />
             ),
           )}
+        </div>
+      )}
+
+      {/* Track → album confirmation dialog */}
+      {confirmTrack && (
+        <div className="backdrop" onClick={() => setConfirmTrack(null)}>
+          <div className="dialog" onClick={(e) => e.stopPropagation()}>
+            <h3>Request full album?</h3>
+            <p className="muted">
+              Requesting "<b>{confirmTrack.title}</b>" will download the full album
+              {confirmTrack.albumTitle ? <> <b>"{confirmTrack.albumTitle}"</b></> : ""}.
+              Individual track downloads aren't supported yet.
+            </p>
+            <div className="actions">
+              <button className="btn ghost" onClick={() => setConfirmTrack(null)}>
+                Cancel
+              </button>
+              <button
+                className="btn primary"
+                onClick={() => {
+                  doRequest(confirmTrack);
+                  setConfirmTrack(null);
+                }}
+              >
+                Request album
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </>

@@ -116,3 +116,11 @@ class Settings(BaseModel):
 
 class SettingsIn(BaseModel):
     quality: Literal["mp3", "flac"]
+
+
+class StatsOut(BaseModel):
+    total: int
+    available: int
+    pending: int
+    downloading: int
+    failed: int

@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from "react";
-import { api } from "../api";
-import type { MusicRequest, ServiceLink } from "../types";
+import { useEffect, useRef, useState, useCallback } from "react";
+import { api, getToken } from "../api";
+import type { MusicRequest, ServiceLink, StatsOut } from "../types";
 import { MediaRow } from "../components/MediaRow";
 import { StatusChip } from "../components/StatusChip";
 import { Pipeline } from "../components/Pipeline";
@@ -9,12 +9,13 @@ import { EmptyState, Spinner } from "../components/States";
 export function Requests() {
   const [items, setItems] = useState<MusicRequest[]>([]);
   const [services, setServices] = useState<ServiceLink[]>([]);
+  const [stats, setStats] = useState<StatsOut | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<number | null>(null);
   const [retryingId, setRetryingId] = useState<number | null>(null);
-  const [searching, setSearching] = useState(false);
-  const [searchMessage, setSearchMessage] = useState<string | null>(null);
+  const [searchingId, setSearchingId] = useState<number | null>(null);
+  const [clearing, setClearing] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState<MusicRequest | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const first = useRef(true);
@@ -22,30 +23,43 @@ export function Requests() {
   const errText = (e: unknown, fallback: string) =>
     e instanceof Error && e.message ? e.message : fallback;
 
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
     try {
-      const list = await api.requests();
+      const [list, s] = await Promise.all([api.requests(), api.stats()]);
       setItems(list);
+      setStats(s);
       setError(null);
-    } catch (e: any) {
-      setError(e.message || "Couldn't load requests");
+    } catch (e: unknown) {
+      setError(errText(e, "Couldn't load requests"));
     } finally {
       if (first.current) {
         setLoading(false);
         first.current = false;
       }
     }
-  };
+  }, []);
 
   useEffect(() => {
     api.services().then(setServices).catch(() => {});
     refresh();
-    const t = setInterval(refresh, 8000);
-    return () => clearInterval(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
-  // Auto-dismiss transient retry/remove feedback.
+    // SSE: instant updates when request statuses change.
+    const token = getToken();
+    const es = new EventSource(`/api/events?token=${encodeURIComponent(token ?? "")}`);
+    es.addEventListener("status_change", () => { refresh(); });
+    es.addEventListener("requests_cleared", () => { refresh(); });
+    // On SSE error fall back to polling — the interval below covers it.
+    es.onerror = () => { es.close(); };
+
+    // Fallback poll every 15s (reduced from 8s since SSE handles most updates).
+    const t = setInterval(refresh, 15000);
+    return () => {
+      clearInterval(t);
+      es.close();
+    };
+  }, [refresh]);
+
+  // Auto-dismiss transient feedback.
   useEffect(() => {
     if (!actionMessage) return;
     const t = setTimeout(() => setActionMessage(null), 4000);
@@ -57,7 +71,7 @@ export function Requests() {
     try {
       const res = await api.retry(id);
       setActionMessage(res.message ?? "Retrying…");
-    } catch (e) {
+    } catch (e: unknown) {
       setActionMessage(`Couldn't retry: ${errText(e, "try again")}`);
     }
     setRetryingId(null);
@@ -69,24 +83,35 @@ export function Requests() {
     try {
       const res = await api.deleteRequest(id);
       setActionMessage(res.message ?? "Removed.");
-    } catch (e) {
+    } catch (e: unknown) {
       setActionMessage(`Couldn't remove: ${errText(e, "try again")}`);
     }
     refresh();
   };
 
-  const searchNow = async () => {
-    setSearching(true);
-    setSearchMessage(null);
+  const searchNow = async (id: number) => {
+    setSearchingId(id);
     try {
-      const res = await api.searchNow();
-      setSearchMessage(res.message ?? "Searching now…");
+      const res = await api.searchRequestNow(id);
+      setActionMessage(res.message ?? "Searching now…");
     } catch {
-      setSearchMessage("Couldn't start a search right now.");
+      setActionMessage("Couldn't start a search right now.");
     } finally {
-      setSearching(false);
+      setSearchingId(null);
       refresh();
     }
+  };
+
+  const clearAvailable = async () => {
+    setClearing(true);
+    try {
+      const res = await api.clearAvailable();
+      setActionMessage(res.message ?? "Cleared.");
+    } catch (e: unknown) {
+      setActionMessage(`Couldn't clear: ${errText(e, "try again")}`);
+    }
+    setClearing(false);
+    refresh();
   };
 
   if (loading) return <Spinner />;
@@ -102,7 +127,27 @@ export function Requests() {
 
   return (
     <>
-      {actionMessage && <div className="toast">{actionMessage}</div>}
+      {actionMessage && <div className="toast" style={{ marginBottom: 10 }}>{actionMessage}</div>}
+
+      {stats && (
+        <div className="stats-bar">
+          {stats.available > 0 && <span className="stat available">{stats.available} available</span>}
+          {stats.downloading > 0 && <span className="stat downloading">{stats.downloading} downloading</span>}
+          {stats.pending > 0 && <span className="stat pending">{stats.pending} pending</span>}
+          {stats.failed > 0 && <span className="stat failed">{stats.failed} failed</span>}
+          {stats.available > 0 && (
+            <button
+              className="btn small ghost"
+              onClick={clearAvailable}
+              disabled={clearing}
+              style={{ marginLeft: "auto" }}
+            >
+              {clearing ? "Clearing…" : `Clear ${stats.available} fulfilled`}
+            </button>
+          )}
+        </div>
+      )}
+
       <div className="stack">
         {items.map((req) => {
           const subtitle = [
@@ -127,10 +172,9 @@ export function Requests() {
                   pipeline={req.pipeline}
                   services={services}
                   retrying={retryingId === req.id}
-                  searching={searching}
-                  searchMessage={searchMessage}
+                  searching={searchingId === req.id}
                   onRetry={() => retry(req.id)}
-                  onSearchNow={searchNow}
+                  onSearchNow={() => searchNow(req.id)}
                   onRemove={() => setConfirmRemove(req)}
                 />
               )}
@@ -144,8 +188,8 @@ export function Requests() {
           <div className="dialog" onClick={(e) => e.stopPropagation()}>
             <h3>Remove request?</h3>
             <p className="muted">
-              “{confirmRemove.title || confirmRemove.foreignId}” will be removed from your requests and
-              unmonitored in Lidarr. This can’t be undone.
+              "{confirmRemove.title || confirmRemove.foreignId}" will be removed from your requests and
+              unmonitored in Lidarr. This can't be undone.
             </p>
             <div className="actions">
               <button className="btn ghost" onClick={() => setConfirmRemove(null)}>
