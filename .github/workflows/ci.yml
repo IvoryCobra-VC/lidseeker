@@ -21,11 +21,9 @@ jobs:
         run: ruff check app tests
       - name: Test (pytest)
         run: pytest -q
-      # Dependency vuln scan (complements Dependabot — fails fast in CI).
-      # Non-blocking: surfaces advisories without blocking merges on an
-      # unfixable transitive CVE. Drop `continue-on-error` to make it a gate.
+      # Hard gate: a critical Python CVE blocks merging. Run after tests so a
+      # vuln doesn't hide a build failure.
       - name: Audit Python deps (pip-audit)
-        continue-on-error: true
         run: pip-audit -r requirements.txt
 
   web:
@@ -62,7 +60,11 @@ jobs:
           distribution: temurin
           java-version: "17"
           cache: gradle
-      - name: Build debug APK
+      - name: Lint
         run: |
           chmod +x ./gradlew
-          ./gradlew assembleDebug --no-daemon
+          ./gradlew lint --no-daemon
+      - name: Unit tests
+        run: ./gradlew test --no-daemon
+      - name: Build debug APK
+        run: ./gradlew assembleDebug --no-daemon

@@ -20,7 +20,8 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             // Signed with the debug keystore so anyone can build a release APK
             // from source without a private key. The APK is distributed via
             // GitHub Releases; sideloaders should verify the artifact against
@@ -79,4 +80,10 @@ dependencies {
 
     // Image loading
     implementation("io.coil-kt:coil-compose:2.6.0")
+
+    // Unit tests
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
+    testImplementation("androidx.arch.core:core-testing:2.2.0")
+    testImplementation("io.mockk:mockk:1.13.12")
 }

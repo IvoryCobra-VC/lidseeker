@@ -1,9 +1,9 @@
 """lidseeker — a music request backend (the 'seerr' for Lidarr)."""
 import asyncio
+import json as _json
 import logging
 import mimetypes
 import os
-import time
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -11,16 +11,32 @@ import bcrypt
 import httpx
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import __version__, auth, config, db, lidarr, notify, slskd, soularr_cfg, soularr_ctl
+from .ratelimit import SlidingWindowLimiter, client_ip, login_limiter
 from .schemas import (
     ActionResult, DiscoverCategories, LoginIn, Me, PasswordChange, RequestIn, RequestOut,
-    SearchResult, ServiceLink, Settings, SettingsIn, TokenOut, Track, User, UserCreate,
+    SearchResult, ServiceLink, Settings, SettingsIn, StatsOut, TokenOut, Track, User, UserCreate,
 )
 
 log = logging.getLogger("lidseeker")
+
+# Connected SSE clients — each is an asyncio.Queue the SSE endpoint drains.
+_sse_subscribers: set[asyncio.Queue] = set()
+
+
+def _broadcast(event_type: str, data: dict) -> None:
+    """Push an SSE event to all connected browser/app clients. Fire-and-forget."""
+    msg = f"event: {event_type}\ndata: {_json.dumps(data)}\n\n"
+    dead: set[asyncio.Queue] = set()
+    for q in _sse_subscribers:
+        try:
+            q.put_nowait(msg)
+        except asyncio.QueueFull:
+            dead.add(q)
+    _sse_subscribers -= dead
 
 
 @asynccontextmanager
@@ -121,6 +137,7 @@ async def _status_loop() -> None:
                 if live != row["status"]:
                     db.update_status(row["id"], live)
                     row["status"] = live
+                    _broadcast("status_change", {"id": row["id"], "status": live})
                 if live == "available":
                     continue
                 await _track_search_attempts(row)
@@ -128,8 +145,8 @@ async def _status_loop() -> None:
             for row in db.unnotified_available():
                 if notify.enabled():
                     await notify.publish(
-                        "Ready to play 🎵",
-                        f"{row['title']} — {row['artist'] or ''} is now available".strip(),
+                        "Ready to play",
+                        f"🎵 {row['title']} — {row['artist'] or ''} is now available".strip(),
                     )
                 db.mark_notified(row["id"])
                 try:
@@ -215,95 +232,34 @@ async def health() -> JSONResponse:
 # --------------------------------------------------------------------------
 # Auth
 # --------------------------------------------------------------------------
-# --- Login brute-force limiter (in-process; counts FAILURES only) ---
-_LOGIN_MAX_FAILURES = 10
-_LOGIN_WINDOW_SECONDS = 300
-# {client_ip: [failure_timestamps]}
-_login_failures: dict[str, list[float]] = {}
-_login_attempt_counter = 0
-
-
-def _client_ip(request: Request) -> str:
-    return request.client.host if request.client else "unknown"
-
-
-def _login_blocked(ip: str) -> bool:
-    global _login_attempt_counter
-    now = time.monotonic()
-    recent = [t for t in _login_failures.get(ip, []) if now - t < _LOGIN_WINDOW_SECONDS]
-    if recent:
-        _login_failures[ip] = recent
-    else:
-        _login_failures.pop(ip, None)  # prune empty entries immediately
-    # Periodic full sweep so IPs that never return don't leak memory.
-    _login_attempt_counter += 1
-    if _login_attempt_counter % 100 == 0:
-        _prune_login_failures(now)
-    return len(recent) >= _LOGIN_MAX_FAILURES
-
-
-def _prune_login_failures(now: float) -> None:
-    """Drop entries that are entirely outside the window."""
-    stale = [
-        ip for ip, stamps in _login_failures.items()
-        if not any(now - t < _LOGIN_WINDOW_SECONDS for t in stamps)
-    ]
-    for ip in stale:
-        _login_failures.pop(ip, None)
-
-
-def _record_login_failure(ip: str) -> None:
-    _login_failures.setdefault(ip, []).append(time.monotonic())
-
 
 # --------------------------------------------------------------------------
-# Rate limiter — protects external APIs (MusicBrainz: ~1 req/s, Lidarr: finite)
+# Rate limiters — MusicBrainz: ~1 req/s; Lidarr: finite.
+# login_limiter is imported from ratelimit; these guard search/discover.
 # --------------------------------------------------------------------------
-class _RateLimiter:
-    """Simple sliding-window rate limiter, per-IP, per-endpoint class."""
-
-    def __init__(self, max_requests: int, window_seconds: float):
-        self.max_requests = max_requests
-        self.window_seconds = window_seconds
-        self._buckets: dict[str, list[float]] = {}
-        self._hits = 0
-
-    async def __call__(self, request: Request) -> None:
-        ip = _client_ip(request)
-        now = time.monotonic()
-        stamps = self._buckets.get(ip, [])
-        recent = [t for t in stamps if now - t < self.window_seconds]
-        if len(recent) >= self.max_requests:
-            raise HTTPException(429, "Too many requests. Please wait a moment.")
-        recent.append(now)
-        self._buckets[ip] = recent
-        # Periodic full sweep so the dict doesn't grow unbounded.
-        self._hits += 1
-        if self._hits % 200 == 0:
-            stale = [
-                k for k, v in self._buckets.items()
-                if not any(now - t < self.window_seconds for t in v)
-            ]
-            for k in stale:
-                self._buckets.pop(k, None)
+_rate_limit_search = SlidingWindowLimiter(max_events=20, window_seconds=10)
+_rate_limit_discover = SlidingWindowLimiter(max_events=30, window_seconds=10)
+_rate_limit_tracklist = SlidingWindowLimiter(max_events=30, window_seconds=10)
 
 
-# MusicBrainz asks for ~1 req/s; allow bursts but cap sustained rate.
-_rate_limit_search = _RateLimiter(max_requests=20, window_seconds=10)
-_rate_limit_discover = _RateLimiter(max_requests=30, window_seconds=10)
-_rate_limit_tracklist = _RateLimiter(max_requests=30, window_seconds=10)
+def _check_rate(limiter: SlidingWindowLimiter, request: Request) -> None:
+    ip = client_ip(request)
+    if limiter.is_blocked(ip):
+        raise HTTPException(429, "Too many requests. Please wait a moment.")
+    limiter.register(ip)
 
 
 @app.post("/api/auth/login", response_model=TokenOut)
 async def login(body: LoginIn, request: Request) -> TokenOut:
-    ip = _client_ip(request)
-    if _login_blocked(ip):
+    ip = client_ip(request)
+    if login_limiter.is_blocked(ip):
         raise HTTPException(429, "Too many failed logins. Try again in a few minutes.")
     user = auth.verify_credentials(body.username, body.password)
     if not user:
-        _record_login_failure(ip)
+        login_limiter.register(ip)
         raise HTTPException(401, "Invalid credentials")
-    _login_failures.pop(ip, None)   # clear the counter on success
+    # Clear the failure window on a successful login.
+    login_limiter.clear(ip)
     return TokenOut(token=auth.issue_token(user))
 
 
@@ -383,11 +339,12 @@ async def delete_user(
 # --------------------------------------------------------------------------
 @app.get("/api/search", response_model=list[SearchResult])
 async def search(
+    request: Request,
     term: str = Query(..., min_length=1),
     type: str = Query("album", pattern="^(artist|album|track)$"),
     _user: auth.CurrentUser = Depends(auth.require_user),
-    _rl: None = Depends(_rate_limit_search),
 ) -> list[dict]:
+    _check_rate(_rate_limit_search, request)
     if type == "track":
         return await lidarr.search_tracks(term)
     return await lidarr.search(term, type)
@@ -395,18 +352,22 @@ async def search(
 
 @app.get("/api/artist/{foreign_id}/albums", response_model=list[SearchResult])
 async def artist_albums(
-    foreign_id: str, _user: auth.CurrentUser = Depends(auth.require_user),
-    _rl: None = Depends(_rate_limit_search),
+    request: Request,
+    foreign_id: str,
+    _user: auth.CurrentUser = Depends(auth.require_user),
 ) -> list[dict]:
+    _check_rate(_rate_limit_search, request)
     return await lidarr.artist_albums(foreign_id)
 
 
 @app.get("/api/album/{foreign_id}/tracks", response_model=list[Track])
 async def album_tracks(
-    foreign_id: str, _user: auth.CurrentUser = Depends(auth.require_user),
-    _rl: None = Depends(_rate_limit_tracklist),
+    request: Request,
+    foreign_id: str,
+    _user: auth.CurrentUser = Depends(auth.require_user),
 ) -> list[dict]:
     """Tracklist for an album (for the expandable song view)."""
+    _check_rate(_rate_limit_tracklist, request)
     return await lidarr.album_tracks(foreign_id)
 
 
@@ -584,25 +545,27 @@ async def retry_request(
 
 @app.get("/api/discover/categories", response_model=DiscoverCategories)
 async def discover_categories(
+    request: Request,
     genre: Optional[str] = Query(None),
     decade: Optional[int] = Query(None),
     _user: auth.CurrentUser = Depends(auth.require_user),
-    _rl: None = Depends(_rate_limit_discover),
 ) -> dict:
     """Genre + decade chips for the Discover tab, each conditioned on the other
     active filter so the chips only offer combinations that have results."""
+    _check_rate(_rate_limit_discover, request)
     return await lidarr.discover_categories(genre=genre, decade=decade)
 
 
 @app.get("/api/discover", response_model=list[SearchResult])
 async def discover(
+    request: Request,
     genre: Optional[str] = Query(None),
     decade: Optional[int] = Query(None),
     _user: auth.CurrentUser = Depends(auth.require_user),
-    _rl: None = Depends(_rate_limit_discover),
 ) -> list[dict]:
     """Unowned releases from artists in your library. No filter → newest first;
     a `genre` or `decade` browses that category instead."""
+    _check_rate(_rate_limit_discover, request)
     return await lidarr.discover(genre=genre, decade=decade)
 
 
@@ -690,6 +653,96 @@ def _to_out(row: dict, pipeline: dict | None = None, requested_by: str | None = 
         "pipeline": pipeline,
         "requestedBy": requested_by,
     }
+
+
+# --------------------------------------------------------------------------
+# SSE — real-time request status updates
+# --------------------------------------------------------------------------
+@app.get("/api/events", include_in_schema=False)
+async def sse_stream(
+    request: Request,
+    token: Optional[str] = Query(None),
+):
+    """Server-Sent Events stream. Emits `status_change` and keepalive pings.
+
+    EventSource cannot send custom headers, so auth is via a `?token=` query
+    parameter — this is a well-established SSE pattern for JWT auth."""
+    from fastapi.security import HTTPAuthorizationCredentials
+    creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token or "")
+    try:
+        auth.require_user(creds)
+    except Exception:
+        return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
+    queue: asyncio.Queue[str] = asyncio.Queue(maxsize=50)
+    _sse_subscribers.add(queue)
+
+    async def gen():
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    msg = await asyncio.wait_for(queue.get(), timeout=25.0)
+                    yield msg
+                except asyncio.TimeoutError:
+                    yield ": ping\n\n"
+        except asyncio.CancelledError:
+            pass
+        finally:
+            _sse_subscribers.discard(queue)
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# --------------------------------------------------------------------------
+# Bulk clear + per-request search
+# --------------------------------------------------------------------------
+@app.post("/api/requests/clear-available", response_model=ActionResult)
+async def clear_available(user: auth.CurrentUser = Depends(auth.require_user)) -> dict:
+    """Delete all requests that are in the 'available' state.
+
+    Admins clear everyone's available requests; regular users clear only their own."""
+    user_id = None if user.is_admin else user.id
+    n = db.delete_available(user_id=user_id)
+    _broadcast("requests_cleared", {"count": n})
+    return {"ok": True, "message": f"Cleared {n} fulfilled request{'s' if n != 1 else ''}."}
+
+
+@app.post("/api/requests/{rid}/search-now", response_model=ActionResult)
+async def search_request_now(
+    rid: int, background: BackgroundTasks,
+    user: auth.CurrentUser = Depends(auth.require_user),
+) -> dict:
+    """Kick off a search for a single request right now."""
+    row = db.get_request(rid)
+    if not row:
+        raise HTTPException(404, "Request not found")
+    if not user.is_admin and row.get("user_id") != user.id:
+        raise HTTPException(403, "That isn't your request.")
+    if row["status"] in ("available", "error", "failed"):
+        raise HTTPException(409, "Request is already resolved.")
+    try:
+        if config.SOULARR_ENABLED:
+            await soularr_ctl.trigger_run()
+        elif row["lidarr_album_id"]:
+            await lidarr.album_search([row["lidarr_album_id"]])
+    except Exception as e:  # noqa: BLE001
+        log.warning("search-now (rid=%s) failed: %s", rid, e)
+        raise HTTPException(503, "Couldn't start a search right now.") from e
+    return {"ok": True, "message": "Searching now — this can take a minute."}
+
+
+# --------------------------------------------------------------------------
+# Stats
+# --------------------------------------------------------------------------
+@app.get("/api/stats", response_model=StatsOut)
+async def stats(_user: auth.CurrentUser = Depends(auth.require_user)) -> dict:
+    """Request counts by status for a quick dashboard summary."""
+    return db.request_stats()
 
 
 # --------------------------------------------------------------------------

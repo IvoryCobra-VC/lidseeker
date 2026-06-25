@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -23,6 +24,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -43,6 +45,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.lidseeker.app.data.MusicRequest
 import com.lidseeker.app.data.Repository
 import com.lidseeker.app.data.ServiceLink
+import com.lidseeker.app.data.StatsOut
 import com.lidseeker.app.ui.AppCard
 import com.lidseeker.app.ui.FullScreenState
 import com.lidseeker.app.ui.LoadingState
@@ -58,18 +61,17 @@ class RequestsViewModel(private val repo: Repository) : ViewModel() {
         private set
     var services by mutableStateOf<List<ServiceLink>>(emptyList())
         private set
+    var stats by mutableStateOf<StatsOut?>(null)
+        private set
     var loading by mutableStateOf(true)
         private set
     var error by mutableStateOf<String?>(null)
         private set
-    var forcing by mutableStateOf(false)
-        private set
-    var forceMessage by mutableStateOf<String?>(null)
+    // Per-request search: tracks which request id is currently being searched.
+    var searchingId by mutableStateOf<Int?>(null)
         private set
     var retryingId by mutableStateOf<Int?>(null)
         private set
-    // Transient feedback for retry/remove (shown in a snackbar), so a failed
-    // action isn't a silent no-op.
     var actionMessage by mutableStateOf<String?>(null)
         private set
 
@@ -100,17 +102,16 @@ class RequestsViewModel(private val repo: Repository) : ViewModel() {
         }
     }
 
-    fun forceSearch() {
-        if (forcing) return
-        forcing = true
-        forceMessage = null
+    fun searchNow(id: Int) {
+        if (searchingId != null) return
+        searchingId = id
         viewModelScope.launch {
-            forceMessage = try {
-                repo.forceSoularr().message ?: "Searching now…"
+            actionMessage = try {
+                repo.searchRequestNow(id).message ?: "Searching now…"
             } catch (e: Exception) {
-                "Couldn't start a search right now."
+                "Couldn't start search: ${e.message ?: "try again"}"
             } finally {
-                forcing = false
+                searchingId = null
             }
             refresh()
         }
@@ -124,10 +125,11 @@ class RequestsViewModel(private val repo: Repository) : ViewModel() {
         }
     }
 
-    /** Awaitable fetch — used by pull-to-refresh so the spinner stays until done. */
+    /** Awaitable fetch used by pull-to-refresh so the spinner stays until done. */
     suspend fun refreshNow() {
         try {
             items = repo.requests()
+            stats = runCatching { repo.stats() }.getOrNull()
             error = null
         } catch (e: Exception) {
             error = e.message ?: "Failed to load requests"
@@ -147,22 +149,19 @@ fun RequestsScreen(modifier: Modifier = Modifier) {
     val lifecycleOwner = LocalLifecycleOwner.current
     val snackbarHostState = remember { SnackbarHostState() }
 
-    // Initial load once.
     LaunchedEffect(Unit) {
         vm.loadServices()
         vm.refresh(initial = true)
     }
-    // Poll only while the screen is actually visible — pauses when backgrounded
-    // or navigated away, instead of draining battery/network forever.
+    // Poll only while the screen is visible; 15 s is enough given the SSE push on web.
     LaunchedEffect(lifecycleOwner) {
         lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
             while (true) {
-                delay(8_000)
+                delay(15_000)
                 vm.refresh()
             }
         }
     }
-    // Show transient retry/remove feedback.
     LaunchedEffect(vm.actionMessage) {
         vm.actionMessage?.let {
             snackbarHostState.showSnackbar(it)
@@ -188,23 +187,28 @@ fun RequestsScreen(modifier: Modifier = Modifier) {
                 message = "Albums and artists you request will appear here, with live download status.",
                 modifier = Modifier.fillMaxSize(),
             )
-            else -> PullToRefresh(onRefresh = { vm.refreshNow() }, modifier = Modifier.fillMaxSize()) {
-                LazyColumn(
-                    Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
+            else -> Column(Modifier.fillMaxSize()) {
+                vm.stats?.let { StatsBar(it) }
+                PullToRefresh(
+                    onRefresh = { vm.refreshNow() },
+                    modifier = Modifier.weight(1f),
                 ) {
-                    items(vm.items, key = { it.id }) { req ->
-                        RequestRow(
-                            req = req,
-                            services = vm.services,
-                            forcing = vm.forcing,
-                            forceMessage = vm.forceMessage,
-                            onForceSearch = vm::forceSearch,
-                            retrying = vm.retryingId == req.id,
-                            onRetry = { vm.retry(req.id) },
-                            onRemove = { vm.remove(req.id) },
-                        )
+                    LazyColumn(
+                        Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        items(vm.items, key = { it.id }) { req ->
+                            RequestRow(
+                                req = req,
+                                services = vm.services,
+                                searchingId = vm.searchingId,
+                                onSearchNow = { vm.searchNow(req.id) },
+                                retrying = vm.retryingId == req.id,
+                                onRetry = { vm.retry(req.id) },
+                                onRemove = { vm.remove(req.id) },
+                            )
+                        }
                     }
                 }
             }
@@ -214,12 +218,42 @@ fun RequestsScreen(modifier: Modifier = Modifier) {
 }
 
 @Composable
+private fun StatsBar(stats: StatsOut) {
+    if (stats.total == 0) return
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        if (stats.available > 0) StatPill("${stats.available} ready", MaterialTheme.colorScheme.primary)
+        if (stats.downloading > 0) StatPill("${stats.downloading} downloading", MaterialTheme.colorScheme.tertiary)
+        if (stats.pending > 0) StatPill("${stats.pending} pending", MaterialTheme.colorScheme.onSurfaceVariant)
+        if (stats.failed > 0) StatPill("${stats.failed} failed", MaterialTheme.colorScheme.error)
+    }
+}
+
+@Composable
+private fun StatPill(label: String, color: androidx.compose.ui.graphics.Color) {
+    Surface(
+        shape = MaterialTheme.shapes.small,
+        color = color.copy(alpha = 0.12f),
+    ) {
+        Text(
+            label,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+            style = MaterialTheme.typography.labelSmall,
+            color = color,
+        )
+    }
+}
+
+@Composable
 private fun RequestRow(
     req: MusicRequest,
     services: List<ServiceLink>,
-    forcing: Boolean,
-    forceMessage: String?,
-    onForceSearch: () -> Unit,
+    searchingId: Int?,
+    onSearchNow: () -> Unit,
     retrying: Boolean,
     onRetry: () -> Unit,
     onRemove: () -> Unit,
@@ -270,9 +304,8 @@ private fun RequestRow(
                         PipelineView(
                             pipeline = it,
                             services = services,
-                            forcing = forcing,
-                            forceMessage = forceMessage,
-                            onForceSearch = onForceSearch,
+                            forcing = searchingId == req.id,
+                            onForceSearch = onSearchNow,
                             retrying = retrying,
                             onRetry = onRetry,
                         )

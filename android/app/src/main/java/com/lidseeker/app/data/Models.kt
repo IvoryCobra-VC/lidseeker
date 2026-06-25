@@ -88,3 +88,15 @@ data class AppSettings(
 
 @Serializable
 data class SettingsBody(val quality: String)
+
+@Serializable
+data class PasswordChangeBody(val currentPassword: String, val newPassword: String)
+
+@Serializable
+data class StatsOut(
+    val total: Int,
+    val available: Int,
+    val pending: Int,
+    val downloading: Int,
+    val failed: Int,
+)

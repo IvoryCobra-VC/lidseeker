@@ -64,3 +64,11 @@ export type AppSettings = {
 export type ServiceLink = { name: string; url: string };
 
 export type ActionResult = { ok: boolean; message?: string | null };
+
+export type StatsOut = {
+  total: number;
+  available: number;
+  pending: number;
+  downloading: number;
+  failed: number;
+};

@@ -34,8 +34,11 @@ def test_client_ip_respects_trust_proxy(monkeypatch):
 def test_security_headers_and_login_rate_limit(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "sec.db"))
     from app import main
-    monkeypatch.setattr(main, "_LOGIN_MAX_FAILURES", 2)
-    main._login_failures.clear()
+    from app import ratelimit
+    # Patch login_limiter to a tight 2-attempt cap so the test doesn't need 10 calls.
+    tight = SlidingWindowLimiter(max_events=2, window_seconds=300)
+    monkeypatch.setattr(ratelimit, "login_limiter", tight)
+    monkeypatch.setattr(main, "login_limiter", tight)
 
     with TestClient(main.app) as client:
         r = client.get("/api/health")

@@ -36,13 +36,17 @@ jobs:
           chmod +x ./gradlew
           ./gradlew assembleRelease --no-daemon
 
-      - name: Stage APK
-        run: cp android/app/build/outputs/apk/release/app-release.apk "lidseeker-${GITHUB_REF_NAME}.apk"
+      - name: Stage APK and generate checksum
+        run: |
+          cp android/app/build/outputs/apk/release/app-release.apk "lidseeker-${GITHUB_REF_NAME}.apk"
+          sha256sum "lidseeker-${GITHUB_REF_NAME}.apk" > "lidseeker-${GITHUB_REF_NAME}.apk.sha256"
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          files: lidseeker-${{ github.ref_name }}.apk
+          files: |
+            lidseeker-${{ github.ref_name }}.apk
+            lidseeker-${{ github.ref_name }}.apk.sha256
           prerelease: ${{ contains(github.ref_name, '-') }}
           generate_release_notes: true
           body: |
