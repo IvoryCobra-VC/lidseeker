@@ -6,7 +6,7 @@ throttle login attempts (brute-force protection) but generic enough for reuse.
 import time
 from collections import defaultdict, deque
 
-from fastapi import Request
+from fastapi import HTTPException, Request
 
 from . import config
 
@@ -31,6 +31,17 @@ class SlidingWindowLimiter:
     def register(self, key: str) -> None:
         """Record one event against `key`."""
         self._prune(key).append(time.monotonic())
+
+    def clear(self, key: str) -> None:
+        """Reset the counter for `key` (e.g. after a successful login)."""
+        self._hits.pop(key, None)
+
+    async def __call__(self, request: Request) -> None:
+        """FastAPI dependency: raise 429 and register a hit when over the cap."""
+        ip = client_ip(request)
+        if self.is_blocked(ip):
+            raise HTTPException(429, "Too many requests. Please wait a moment.")
+        self.register(ip)
 
 
 def client_ip(request: Request) -> str:

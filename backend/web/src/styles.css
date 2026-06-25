@@ -209,6 +209,19 @@ button { font-family: inherit; }
 .muted { color: var(--text-dim); }
 .section-title { font-weight: 600; font-size: 16px; margin: 0 0 4px; }
 
+/* ---------- Stats bar (Requests page summary) ---------- */
+.stats-bar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-bottom: 12px; font-size: 13px;
+}
+.stat {
+  padding: 4px 10px; border-radius: 999px; font-weight: 600;
+}
+.stat.available { background: var(--accent); color: var(--on-accent); }
+.stat.downloading { background: var(--amber); color: var(--on-accent); }
+.stat.pending { background: var(--surface-2); color: var(--text-dim); }
+.stat.failed { background: var(--danger); color: #fff; }
+
 /* dialog */
 .backdrop {
   position: fixed; inset: 0; background: rgba(0,0,0,0.6);

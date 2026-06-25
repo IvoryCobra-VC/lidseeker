@@ -59,4 +59,16 @@ interface ApiService {
 
     @PUT("api/settings")
     suspend fun putSettings(@Body body: SettingsBody): ActionResult
+
+    @PUT("api/me/password")
+    suspend fun changePassword(@Body body: PasswordChangeBody): ActionResult
+
+    @POST("api/requests/clear-available")
+    suspend fun clearAvailable(): ActionResult
+
+    @POST("api/requests/{id}/search-now")
+    suspend fun searchRequestNow(@Path("id") id: Int): ActionResult
+
+    @GET("api/stats")
+    suspend fun stats(): StatsOut
 }
