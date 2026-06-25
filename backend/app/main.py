@@ -723,13 +723,17 @@ async def search_request_now(
         raise HTTPException(404, "Request not found")
     if not user.is_admin and row.get("user_id") != user.id:
         raise HTTPException(403, "That isn't your request.")
-    if row["status"] in ("available", "error", "failed"):
-        raise HTTPException(409, "Request is already resolved.")
+    if row["status"] == "available":
+        raise HTTPException(409, "Request is already available.")
+    if row["status"] in ("error", "failed"):
+        raise HTTPException(409, "Use the retry action for failed requests.")
     try:
         if config.SOULARR_ENABLED:
             await soularr_ctl.trigger_run()
         elif row["lidarr_album_id"]:
             await lidarr.album_search([row["lidarr_album_id"]])
+        else:
+            raise HTTPException(409, "Request hasn't been matched to a Lidarr album yet.")
     except Exception as e:  # noqa: BLE001
         log.warning("search-now (rid=%s) failed: %s", rid, e)
         raise HTTPException(503, "Couldn't start a search right now.") from e
