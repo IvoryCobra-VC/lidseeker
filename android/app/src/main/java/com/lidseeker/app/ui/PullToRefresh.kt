@@ -1,22 +1,17 @@
 package com.lidseeker.app.ui
 
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.pulltorefresh.PullToRefreshContainer
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.ui.Alignment
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.input.nestedscroll.nestedScroll
+import kotlinx.coroutines.launch
 
-/**
- * Wraps scrollable [content] with Material pull-to-refresh. When the user pulls
- * past the threshold, [onRefresh] runs and the spinner stays until it finishes
- * (onRefresh is awaited). The content must itself be scrollable (e.g. a
- * LazyColumn) for the gesture to register.
- */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PullToRefresh(
@@ -25,21 +20,21 @@ fun PullToRefresh(
     content: @Composable () -> Unit,
 ) {
     val state = rememberPullToRefreshState()
-    if (state.isRefreshing) {
-        LaunchedEffect(Unit) {
-            onRefresh()
-            state.endRefresh()
-        }
-    }
-    Box(
-        modifier
-            .fillMaxSize()
-            .nestedScroll(state.nestedScrollConnection),
+    var isRefreshing by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
+    PullToRefreshBox(
+        isRefreshing = isRefreshing,
+        onRefresh = {
+            isRefreshing = true
+            scope.launch {
+                onRefresh()
+                isRefreshing = false
+            }
+        },
+        state = state,
+        modifier = modifier,
     ) {
         content()
-        PullToRefreshContainer(
-            state = state,
-            modifier = Modifier.align(Alignment.TopCenter),
-        )
     }
 }
