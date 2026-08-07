@@ -120,6 +120,8 @@ For a public HTTPS URL you have two easy paths:
 
   (`DOMAIN` must resolve to this host and ports 80 + 443 must be reachable for the ACME challenge.)
   Already run Traefik or nginx? Just proxy it to `http://<host>:5056` instead.
+  (`docker-compose.tls.yml` lives in [`backend/`](backend) — clone the repo and run the command from
+  there, or copy the file next to your own `docker-compose.yml`.)
 
 **When exposing it, also:**
 
@@ -167,7 +169,8 @@ when it's off.
 | Push notifications (ntfy) | ✅ | ✅ |
 
 To enable the adapter, set the `SLSKD_*` / `SOULARR_*` vars and layer the overlay (it adds the Soularr
-config mount + a locked-down docker-socket proxy — clone the repo for these files):
+config mount + a locked-down docker-socket proxy — `docker-compose.soularr.yml` also lives in
+[`backend/`](backend), so clone the repo for this one too):
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.soularr.yml up -d
