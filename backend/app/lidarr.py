@@ -510,8 +510,14 @@ async def add_artist(lookup_artist: dict, monitor: str, search_missing: bool) ->
 async def _albums_for_artist_id(artist_id: int) -> list[dict]:
     """Return EVERY album for an artist, paginating through Lidarr's API.
     The default page size is small (~15) — without pagination we'd silently
-    miss albums for artists with large discographies."""
+    miss albums for artists with large discographies.
+
+    Lidarr's /album ignores page/pageSize and returns the whole discography on
+    every call, so for an artist with page_size or more albums each "page" is
+    the same full list. Stop as soon as a page brings nothing new, or this
+    loops forever and runs the process out of memory."""
     all_albums: list[dict] = []
+    seen: set = set()
     page = 1
     page_size = 100
     while True:
@@ -523,7 +529,11 @@ async def _albums_for_artist_id(artist_id: int) -> list[dict]:
             page_data = r.json()
         if not page_data:
             break
-        all_albums.extend(page_data)
+        new = [a for a in page_data if a.get("id") not in seen]
+        if not new:
+            break
+        seen.update(a.get("id") for a in new)
+        all_albums.extend(new)
         if len(page_data) < page_size:
             break
         page += 1
