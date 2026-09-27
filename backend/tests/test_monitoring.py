@@ -151,6 +151,38 @@ def test_albums_for_artist_id_stops_on_empty_page():
     assert len(client.calls) == 2  # page 1 returned 100, page 2 returned [] → stop
 
 
+class _UnpaginatedClient:
+    """Lidarr's real /album: page and pageSize are ignored and every call
+    returns the artist's whole discography."""
+    def __init__(self, albums):
+        self._albums = albums
+        self.calls: list[dict] = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        pass
+
+    async def get(self, path, params=None):
+        self.calls.append(dict(params or {}))
+        if len(self.calls) > 10:
+            raise AssertionError("still paging after 10 calls")
+        return _FakeResponse([list(self._albums)])
+
+
+def test_albums_for_artist_id_stops_when_lidarr_ignores_paging():
+    """An artist with more albums than a page must not loop forever when
+    every page is the same full list."""
+    client = _UnpaginatedClient([{"id": i} for i in range(136)])
+
+    with patch.object(lidarr, "_client", lambda: client):
+        albums = asyncio.run(lidarr._albums_for_artist_id(artist_id=1))
+
+    assert [a["id"] for a in albums] == list(range(136))
+    assert len(client.calls) == 2  # page 2 repeats page 1 → stop
+
+
 # ---------------------------------------------------------------------------
 # request_album — existing artist flow
 # ---------------------------------------------------------------------------
