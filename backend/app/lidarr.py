@@ -100,14 +100,12 @@ def normalize_album(item: dict) -> dict:
     artist = item.get("artist", {}) or {}
     # "In library" means we actually HAVE the album (its tracks are downloaded),
     # not merely that Lidarr knows the album row. Once an artist is in the
-    # library every album carries an id + statistics, so a bare id is true for
-    # the whole discography — use the downloaded file count instead. Fall back
-    # to id only for metadata/search results that carry no statistics.
-    stats = item.get("statistics")
-    if stats is not None:
-        in_library = (stats.get("trackFileCount") or 0) > 0
-    else:
-        in_library = bool(item.get("id"))
+    # library every album of theirs carries an id, so a bare id is true for the
+    # whole discography — only the downloaded file count counts. Rows without
+    # statistics (/album/lookup results) are not in the library; search()
+    # attaches lookup hits' library statistics first.
+    stats = item.get("statistics") or {}
+    in_library = (stats.get("trackFileCount") or 0) > 0
     return {
         "type": "album",
         "foreignId": item.get("foreignAlbumId"),
@@ -130,7 +128,29 @@ async def search(term: str, kind: str) -> list[dict]:
     async with _client() as c:
         r = await c.get(path, params={"term": term})
         r.raise_for_status()
-        return [norm(x) for x in r.json()]
+        items = r.json()
+        if kind != "artist":
+            await _attach_album_statistics(c, items)
+        return [norm(x) for x in items]
+
+
+async def _attach_album_statistics(c: httpx.AsyncClient, items: list[dict]) -> None:
+    """/album/lookup carries an id for every album Lidarr knows (the whole
+    discography of any library artist) but never statistics. Fetch those ids'
+    library rows in one call so normalize_album can tell owned from merely
+    known. On failure the rows stay stat-less and show as requestable."""
+    ids = [x["id"] for x in items if x.get("id") and x.get("statistics") is None]
+    if not ids:
+        return
+    try:
+        r = await c.get("/album", params=[("albumIds", i) for i in ids])
+        r.raise_for_status()
+        stats = {a.get("id"): a.get("statistics") for a in r.json()}
+    except (httpx.HTTPError, ValueError):
+        return
+    for x in items:
+        if x.get("id") in stats:
+            x["statistics"] = stats[x["id"]]
 
 
 # --------------------------------------------------------------------------
