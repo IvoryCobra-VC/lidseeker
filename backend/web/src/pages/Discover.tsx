@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api";
 import type { DiscoverCategories, SearchResult } from "../types";
 import { MediaRow } from "../components/MediaRow";
@@ -7,6 +7,7 @@ import { RequestButton, type ReqState } from "../components/RequestButton";
 import { EmptyState, Spinner } from "../components/States";
 
 export function Discover() {
+  const nav = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   // Filter state lives in the URL so navigating away and back restores the selection.
   const genre = searchParams.get("genre");
@@ -95,6 +96,11 @@ export function Discover() {
               imageUrl={a.imageUrl}
               title={a.title}
               subtitle={[a.artist, a.year].filter(Boolean).join(" · ")}
+              onClick={
+                a.artistForeignId
+                  ? () => nav(`/artist/${encodeURIComponent(a.artistForeignId!)}?name=${encodeURIComponent(a.artist ?? "")}`)
+                  : undefined
+              }
               trailing={
                 a.inLibrary ? (
                   <span className="statuschip available">In library</span>
