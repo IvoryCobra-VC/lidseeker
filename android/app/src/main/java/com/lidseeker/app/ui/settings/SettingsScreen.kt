@@ -1,5 +1,15 @@
 package com.lidseeker.app.ui.settings
 
+import android.content.ActivityNotFoundException
+import android.content.Intent
+import android.net.Uri
+import androidx.compose.foundation.layout.Row
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -248,6 +258,7 @@ fun SettingsScreen(onBack: () -> Unit) {
                         Text("Server:  ${vm.ntfyUrl}", style = MaterialTheme.typography.bodyMedium)
                         Text("Topic:   ${vm.ntfyTopic}", style = MaterialTheme.typography.bodyMedium,
                             fontWeight = FontWeight.SemiBold)
+                        NtfyActions(server = vm.ntfyUrl ?: "https://ntfy.sh", topic = vm.ntfyTopic!!)
                     } else {
                         Text("Push notifications aren't configured on the server.",
                             style = MaterialTheme.typography.bodySmall,
@@ -256,5 +267,36 @@ fun SettingsScreen(onBack: () -> Unit) {
                 }
             }
         }
+    }
+}
+
+/**
+ * One-tap ntfy setup: "Subscribe" deep-links into the ntfy app's subscribe
+ * screen (ntfy://host/topic); without the app it opens the topic in the browser,
+ * which offers the install. "Copy topic" for manual entry.
+ */
+@Composable
+private fun NtfyActions(server: String, topic: String) {
+    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
+    var copied by remember { mutableStateOf(false) }
+    val base = server.trimEnd('/')
+    val host = base.substringAfter("://")
+    Row(
+        Modifier.padding(top = 10.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        FilledTonalButton(onClick = {
+            val deep = Intent(Intent.ACTION_VIEW, Uri.parse("ntfy://$host/$topic"))
+            try {
+                context.startActivity(deep)
+            } catch (_: ActivityNotFoundException) {
+                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("$base/$topic")))
+            }
+        }) { Text("Subscribe in ntfy") }
+        OutlinedButton(onClick = {
+            clipboard.setText(AnnotatedString(topic))
+            copied = true
+        }) { Text(if (copied) "Copied" else "Copy topic") }
     }
 }

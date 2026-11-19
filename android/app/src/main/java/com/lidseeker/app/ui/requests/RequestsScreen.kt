@@ -14,6 +14,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.material3.FilterChip
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.DeleteOutline
@@ -24,7 +26,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -143,9 +144,18 @@ class RequestsViewModel(private val repo: Repository) : ViewModel() {
     }
 }
 
+/** Status filter chips for the Requests list (they double as the status counts). */
+private enum class ReqFilter(val label: String, val matches: (String) -> Boolean) {
+    ALL("All", { true }),
+    ACTIVE("In progress", { it == "pending" || it == "downloading" }),
+    AVAILABLE("Ready", { it == "available" }),
+    PROBLEMS("Failed", { it == "failed" || it == "error" }),
+}
+
 @Composable
 fun RequestsScreen(modifier: Modifier = Modifier) {
     val vm: RequestsViewModel = viewModel(factory = repoFactory { RequestsViewModel(it) })
+    var filter by remember { mutableStateOf(ReqFilter.ALL) }
     val lifecycleOwner = LocalLifecycleOwner.current
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -188,7 +198,25 @@ fun RequestsScreen(modifier: Modifier = Modifier) {
                 modifier = Modifier.fillMaxSize(),
             )
             else -> Column(Modifier.fillMaxSize()) {
-                vm.stats?.let { StatsBar(it) }
+                val counts = ReqFilter.entries.associateWith { f ->
+                    vm.items.count { f.matches(it.status) }
+                }
+                // Only worth showing once the list mixes statuses.
+                if (vm.items.map { it.status }.distinct().size > 1) {
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        items(ReqFilter.entries.filter { it == ReqFilter.ALL || counts[it]!! > 0 }) { f ->
+                            FilterChip(
+                                selected = filter == f,
+                                onClick = { filter = f },
+                                label = { Text("${f.label} ${counts[f]}") },
+                            )
+                        }
+                    }
+                }
+                val shown = vm.items.filter { filter.matches(it.status) }
                 PullToRefresh(
                     onRefresh = { vm.refreshNow() },
                     modifier = Modifier.weight(1f),
@@ -198,7 +226,7 @@ fun RequestsScreen(modifier: Modifier = Modifier) {
                         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
-                        items(vm.items, key = { it.id }) { req ->
+                        items(shown, key = { it.id }) { req ->
                             RequestRow(
                                 req = req,
                                 services = vm.services,
@@ -214,37 +242,6 @@ fun RequestsScreen(modifier: Modifier = Modifier) {
             }
         }
         SnackbarHost(snackbarHostState, Modifier.align(Alignment.BottomCenter))
-    }
-}
-
-@Composable
-private fun StatsBar(stats: StatsOut) {
-    if (stats.total == 0) return
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        if (stats.available > 0) StatPill("${stats.available} ready", MaterialTheme.colorScheme.primary)
-        if (stats.downloading > 0) StatPill("${stats.downloading} downloading", MaterialTheme.colorScheme.tertiary)
-        if (stats.pending > 0) StatPill("${stats.pending} pending", MaterialTheme.colorScheme.onSurfaceVariant)
-        if (stats.failed > 0) StatPill("${stats.failed} failed", MaterialTheme.colorScheme.error)
-    }
-}
-
-@Composable
-private fun StatPill(label: String, color: androidx.compose.ui.graphics.Color) {
-    Surface(
-        shape = MaterialTheme.shapes.small,
-        color = color.copy(alpha = 0.12f),
-    ) {
-        Text(
-            label,
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-            style = MaterialTheme.typography.labelSmall,
-            color = color,
-        )
     }
 }
 

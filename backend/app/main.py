@@ -55,6 +55,7 @@ async def lifespan(_app: FastAPI):
     # cleans up slskd searches, which must happen even if ntfy is disabled.
     asyncio.create_task(_status_loop())
     asyncio.create_task(_reconcile_loop())   # keep pending requests monitored
+    asyncio.create_task(lidarr.warm_discover())  # first Discover open is instant
     try:
         yield
     finally:

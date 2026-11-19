@@ -31,17 +31,17 @@ fun MediaRow(
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        CoverArt(imageUrl, Modifier.size(58.dp), contentDescription = title)
+        CoverArt(imageUrl, Modifier.size(52.dp), contentDescription = title)
         Column(
             modifier = Modifier
                 .weight(1f)
-                .padding(horizontal = 14.dp),
+                .padding(start = 12.dp, end = 8.dp),
         ) {
             Text(
                 title,
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
+                maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
             if (!subtitle.isNullOrBlank()) {

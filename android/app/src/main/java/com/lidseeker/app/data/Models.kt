@@ -22,6 +22,8 @@ data class SearchResult(
     // Track-only: the parent album a song belongs to.
     val albumForeignId: String? = null,
     val albumTitle: String? = null,
+    // Album-only: the artist's id, so tapping an album opens its artist page.
+    val artistForeignId: String? = null,
 )
 
 @Serializable
