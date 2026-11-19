@@ -39,7 +39,7 @@ class SettingsViewModelTest {
         repo = mockk(relaxed = true)
         coEvery { repo.getSettings() } returns AppSettings(
             quality = "flac",
-            ntfyTopic = "lidseeker-paul",
+            ntfyTopic = "lidseeker-example",
             ntfyUrl = "https://ntfy.sh",
         )
         vm = SettingsViewModel(repo)
@@ -56,7 +56,7 @@ class SettingsViewModelTest {
         advanceUntilIdle()
 
         assertEquals("flac", vm.quality)
-        assertEquals("lidseeker-paul", vm.ntfyTopic)
+        assertEquals("lidseeker-example", vm.ntfyTopic)
         assertEquals("https://ntfy.sh", vm.ntfyUrl)
         assertFalse(vm.loading)
     }
