@@ -26,6 +26,8 @@ class SearchResult(BaseModel):
     # Track-only: the parent album, so requesting a song can add its album.
     albumForeignId: Optional[str] = None
     albumTitle: Optional[str] = None
+    # Album-only: the artist's MBID, so clients can open the artist page.
+    artistForeignId: Optional[str] = None
 
 
 class RequestIn(BaseModel):

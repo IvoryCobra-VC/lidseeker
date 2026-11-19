@@ -27,10 +27,10 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.lidseeker.app.data.DiscoverCategories
 import com.lidseeker.app.data.Repository
 import com.lidseeker.app.data.SearchResult
-import com.lidseeker.app.ui.AppCard
+import com.lidseeker.app.data.Track
+import com.lidseeker.app.ui.ExpandableAlbumCard
 import com.lidseeker.app.ui.FullScreenState
 import com.lidseeker.app.ui.LoadingState
-import com.lidseeker.app.ui.MediaRow
 import com.lidseeker.app.ui.PullToRefresh
 import com.lidseeker.app.ui.RequestButton
 import com.lidseeker.app.ui.repoFactory
@@ -51,8 +51,10 @@ class DiscoverViewModel(private val repo: Repository) : ViewModel() {
         private set
     val requestState = mutableStateMapOf<String, String>()
 
-    /** First load — same as a reload with no filters active. */
-    fun start() = load()
+    /** First load — skipped when returning to the tab with a list already shown. */
+    fun start() { if (items.isEmpty()) load() }
+
+    suspend fun albumTracks(foreignId: String): List<Track> = repo.albumTracks(foreignId)
 
     /** Toggle a genre chip; keeps any active decade so filters combine. */
     fun toggleGenre(g: String) {
@@ -121,7 +123,7 @@ class DiscoverViewModel(private val repo: Repository) : ViewModel() {
 @Composable
 fun DiscoverScreen(
     modifier: Modifier = Modifier,
-    onArtistClick: (String, String) -> Unit = { _, _ -> },
+    onArtistClick: (foreignId: String, name: String) -> Unit = { _, _ -> },
 ) {
     val vm: DiscoverViewModel = viewModel(factory = repoFactory { DiscoverViewModel(it) })
     LaunchedEffect(Unit) { vm.start() }
@@ -161,22 +163,25 @@ fun DiscoverScreen(
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     items(vm.items, key = { it.foreignId }) { a ->
-                        AppCard {
-                            MediaRow(
-                                imageUrl = a.imageUrl,
-                                title = a.title,
-                                subtitle = listOfNotNull(a.artist, a.year?.toString())
-                                    .joinToString(" · "),
-                                trailing = {
-                                    RequestButton(
-                                        inLibrary = a.inLibrary,
-                                        requested = a.requested,
-                                        state = vm.requestState[a.foreignId],
-                                        onClick = { vm.request(a) },
-                                    )
-                                },
-                            )
-                        }
+                        // Chevron shows the track list; tapping the row opens the artist.
+                        ExpandableAlbumCard(
+                            imageUrl = a.imageUrl,
+                            title = a.title,
+                            subtitle = listOfNotNull(a.artist, a.year?.toString())
+                                .joinToString(" · "),
+                            loadTracks = { vm.albumTracks(a.foreignId) },
+                            onRowClick = a.artistForeignId?.let { id ->
+                                { onArtistClick(id, a.artist ?: a.title) }
+                            },
+                            trailing = {
+                                RequestButton(
+                                    inLibrary = a.inLibrary,
+                                    requested = a.requested,
+                                    state = vm.requestState[a.foreignId],
+                                    onClick = { vm.request(a) },
+                                )
+                            },
+                        )
                     }
                 }
             }

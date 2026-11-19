@@ -120,6 +120,11 @@ export function Search() {
                   r.albumTitle,
                   r.year,
                 ].filter(Boolean).join(" · ")}
+                onClick={
+                  r.type === "album" && r.artistForeignId
+                    ? () => nav(`/artist/${encodeURIComponent(r.artistForeignId!)}?name=${encodeURIComponent(r.artist ?? "")}`)
+                    : undefined
+                }
                 trailing={
                   r.inLibrary ? (
                     <span className="statuschip available">In library</span>

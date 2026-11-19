@@ -1,6 +1,7 @@
 package com.lidseeker.app.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -186,8 +187,16 @@ fun RequestButton(
         state == "loading" -> CircularProgressIndicator(
             modifier = Modifier.size(20.dp), strokeWidth = 2.dp,
         )
-        else -> FilledTonalButton(onClick = onClick) {
-            Text(if (state == "error") "Retry" else "Request")
+        // Compact so the album title gets the row's width, not the button.
+        else -> FilledTonalButton(
+            onClick = onClick,
+            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+            modifier = Modifier.height(32.dp),
+        ) {
+            Text(
+                if (state == "error") "Retry" else "Request",
+                style = MaterialTheme.typography.labelMedium,
+            )
         }
     }
 }

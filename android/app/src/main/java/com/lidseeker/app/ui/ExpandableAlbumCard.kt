@@ -77,7 +77,10 @@ fun ExpandableAlbumCard(
                 trailing = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         trailing()
-                        IconButton(onClick = { expanded = !expanded }) {
+                        IconButton(
+                            onClick = { expanded = !expanded },
+                            modifier = Modifier.size(36.dp),
+                        ) {
                             Icon(
                                 if (expanded) Icons.Filled.KeyboardArrowUp
                                 else Icons.Filled.KeyboardArrowDown,

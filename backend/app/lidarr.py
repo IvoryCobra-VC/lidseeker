@@ -78,8 +78,11 @@ def _best_image(images: list, kind: str) -> Optional[str]:
 
 
 def _year(date_str: Optional[str]) -> Optional[int]:
+    # Lidarr uses 0001-01-01 for "unknown" — treat anything implausible as no year
+    # rather than showing "· 1" in the app.
     if date_str and len(date_str) >= 4 and date_str[:4].isdigit():
-        return int(date_str[:4])
+        y = int(date_str[:4])
+        return y if y >= 1900 else None
     return None
 
 
@@ -115,22 +118,99 @@ def normalize_album(item: dict) -> dict:
         "artist": artist.get("artistName"),
         "year": _year(item.get("releaseDate")),
         "albumType": item.get("albumType"),
-        "imageUrl": _best_image(item.get("images", []), "album"),
+        # No Lidarr image → Cover Art Archive by release-group MBID (= foreignAlbumId);
+        # a 404 there still falls back to the app's placeholder.
+        "imageUrl": _best_image(item.get("images", []), "album")
+        or _coverart_url(item.get("foreignAlbumId")),
         "inLibrary": in_library,
         "requested": False,   # set by artist_albums via the requests DB
+        "artistForeignId": artist.get("foreignArtistId"),
     }
 
 
 # --------------------------------------------------------------------------
 # Search
 # --------------------------------------------------------------------------
+async def _album_lookup(c, term: str) -> list[dict]:
+    r = await c.get("/album/lookup", params={"term": term})
+    r.raise_for_status()
+    items = r.json()
+    # album/lookup returns Lidarr's id for albums it knows but NO statistics,
+    # so normalize_album would fall back to bool(id) and flag every album of an
+    # in-library artist as "In library" even with zero files. Fetch the real
+    # statistics for those rows.
+    ids = [x["id"] for x in items if x.get("id")]
+    if ids:
+        s = await c.get("/album", params={"albumIds": ids})
+        if s.status_code == 200:
+            stats = {a["id"]: a.get("statistics") or {} for a in s.json()}
+            for x in items:
+                if x.get("id"):
+                    x["statistics"] = stats.get(x["id"], {})
+    return items
+
+
+_TYPE_RANK = {"Album": 0, "EP": 1, "Single": 2}
+
+
+def _album_score(item: dict, q: str) -> tuple:
+    """Sort key (lower = better) for album search results.
+
+    Lidarr's album/lookup is a loose text match, so searching an artist name
+    surfaces any release with that word in its title (bootlegs, covers, other
+    artists' songs called "Radiohead") ahead of the real records. Prefer: the
+    artist matching the query, then plain studio releases over live/compilation,
+    albums over EPs over singles, then the more-rated (better known) release.
+    """
+    artist = _norm_text((item.get("artist") or {}).get("artistName"))
+    title = _norm_text(item.get("title"))
+    artist_hit = 0 if artist == q else (1 if title == q else 2)
+    secondary = 1 if item.get("secondaryTypes") else 0
+    type_rank = _TYPE_RANK.get(item.get("albumType") or "", 3)
+    votes = (item.get("ratings") or {}).get("votes") or 0
+    return (artist_hit, secondary, type_rank, -votes)
+
+
 async def search(term: str, kind: str) -> list[dict]:
-    path = "/artist/lookup" if kind == "artist" else "/album/lookup"
-    norm = normalize_artist if kind == "artist" else normalize_album
+    if kind == "artist":
+        async with _client() as c:
+            r = await c.get("/artist/lookup", params={"term": term})
+            r.raise_for_status()
+            return [normalize_artist(x) for x in r.json()]
+
+    q = _norm_text(term)
     async with _client() as c:
-        r = await c.get(path, params={"term": term})
-        r.raise_for_status()
-        return [norm(x) for x in r.json()]
+        items, artists = await asyncio.gather(
+            _album_lookup(c, term),
+            c.get("/artist/lookup", params={"term": term}),
+            return_exceptions=True,
+        )
+    if isinstance(items, BaseException):
+        raise items
+    items.sort(key=lambda x: _album_score(x, q))
+    results = [normalize_album(x) for x in items]
+
+    # album/lookup only returns a handful of loose matches and often misses an
+    # artist's actual albums entirely. When the query IS an artist's name, lead
+    # with that artist's own albums + EPs.
+    top: list[dict] = []
+    if not isinstance(artists, BaseException) and artists.status_code == 200:
+        exact = next(
+            (a for a in artists.json()[:5] if _norm_text(a.get("artistName")) == q),
+            None,
+        )
+        if exact and exact.get("foreignArtistId"):
+            try:
+                top = [
+                    a for a in await artist_albums(exact["foreignArtistId"])
+                    if a.get("albumType") in _BROWSE_ALBUM_TYPES
+                ]
+            except httpx.HTTPError:
+                top = []
+            top.sort(key=lambda a: (_TYPE_RANK.get(a.get("albumType") or "", 3),
+                                    -(a.get("year") or 0)))
+    seen = {a["foreignId"] for a in top}
+    return top + [a for a in results if a["foreignId"] not in seen]
 
 
 # --------------------------------------------------------------------------
@@ -312,6 +392,7 @@ async def artist_albums(foreign_artist_id: str) -> list[dict]:
             r = await c.get("/album", params={"artistId": existing["id"]})
             r.raise_for_status()
             albums = [normalize_album(x) for x in r.json()]
+        albums.sort(key=lambda x: x["year"] or 0, reverse=True)
     else:
         albums = await _metadata_artist_albums(foreign_artist_id)
 
@@ -367,6 +448,7 @@ async def _metadata_artist_albums(foreign_artist_id: str) -> list[dict]:
             "imageUrl": _coverart_url(a.get("Id") or a.get("id")),
             "inLibrary": False,
             "requested": False,
+            "artistForeignId": foreign_artist_id,
         })
     out.sort(key=lambda x: x["year"] or 0, reverse=True)
     return out
@@ -379,16 +461,14 @@ async def _metadata_artist_albums(foreign_artist_id: str) -> list[dict]:
 # same /album fetch (~3.7k rows) for both the feed and its category facets, and
 # it barely changes minute-to-minute — cache it briefly so flipping between
 # category chips doesn't re-hammer Lidarr each tap.
-_POOL_TTL = 60.0
+_POOL_TTL = 600.0
 _pool_cache: tuple[float, list[tuple[str, list[str], dict]]] = (0.0, [])
+_pool_refresh: Optional[asyncio.Task] = None
 
 
-async def _discover_pool() -> list[tuple[str, list[str], dict]]:
+async def _build_pool() -> list[tuple[str, list[str], dict]]:
     """(releaseDate, genres, raw album) for every released, unowned Album/EP."""
     global _pool_cache
-    now = time.monotonic()
-    if now - _pool_cache[0] < _POOL_TTL and _pool_cache[1]:
-        return _pool_cache[1]
     async with _client() as c:
         r = await c.get("/album")
         r.raise_for_status()
@@ -405,8 +485,34 @@ async def _discover_pool() -> list[tuple[str, list[str], dict]]:
         if not rel or rel[:10] > today:                    # skip undated/future
             continue
         pool.append((rel, a.get("genres") or [], a))
-    _pool_cache = (now, pool)
+    _pool_cache = (time.monotonic(), pool)
     return pool
+
+
+async def _discover_pool() -> list[tuple[str, list[str], dict]]:
+    """The pool, stale-while-revalidate: the ~3.5k-row /album fetch takes seconds,
+    so once warm, serve the cached copy immediately and refresh it in the
+    background when it's older than _POOL_TTL. Only a cold start waits."""
+    global _pool_refresh
+    ts, pool = _pool_cache
+    if not pool:
+        return await _build_pool()
+    if time.monotonic() - ts > _POOL_TTL and (_pool_refresh is None or _pool_refresh.done()):
+        _pool_refresh = asyncio.create_task(_build_pool())
+    return pool
+
+
+async def warm_discover() -> None:
+    """Prime the Discover pool at startup so the first app open is instant."""
+    try:
+        await _build_pool()
+    except httpx.HTTPError:
+        pass
+
+
+def _neg_date(rel: str) -> tuple:
+    """Sort key that orders ISO dates newest-first under an ascending sort."""
+    return tuple(-ord(ch) for ch in rel[:10])
 
 
 def _decade_of(release_date: str) -> Optional[int]:
@@ -422,11 +528,14 @@ async def discover(
     """Released-but-unowned albums by artists already in your library.
 
     No filter → newest first ("new from artists you follow"). With a `genre` or
-    `decade` it browses that category instead, still newest-first within it.
+    `decade` it browses that category by popularity (Lidarr rating votes) so a
+    decade shows its best-known records across the whole decade, not just the
+    last few months of it.
     """
     pool = await _discover_pool()
     requested = db.active_request_foreign_ids()
-    scored: list[tuple[str, dict]] = []
+    browsing = genre is not None or decade is not None
+    scored: list[tuple[tuple, dict]] = []
     for rel, genres, a in pool:
         if genre and genre not in genres:
             continue
@@ -435,8 +544,13 @@ async def discover(
         norm = normalize_album(a)
         if norm["foreignId"] in requested:
             norm["requested"] = True
-        scored.append((rel, norm))
-    scored.sort(key=lambda x: x[0], reverse=True)
+        if browsing:
+            votes = (a.get("ratings") or {}).get("votes") or 0
+            key = (0 if not a.get("secondaryTypes") else 1, -votes, _neg_date(rel))
+        else:
+            key = (_neg_date(rel),)
+        scored.append((key, norm))
+    scored.sort(key=lambda x: x[0])
     return [n for _, n in scored[:limit]]
 
 

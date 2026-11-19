@@ -12,6 +12,7 @@ export type SearchResult = {
   requested: boolean;
   albumForeignId?: string | null;
   albumTitle?: string | null;
+  artistForeignId?: string | null; // albums: open the artist page
 };
 
 export type Pipeline = {

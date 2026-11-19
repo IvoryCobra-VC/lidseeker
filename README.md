@@ -2,7 +2,7 @@
 
 <p align="center">
   A self-hosted <b>music request &amp; discovery app for <a href="https://lidarr.audio/">Lidarr</a></b> — the "seerr" for music.<br/>
-  Search, tap <b>Request</b>, and watch it go from search → download → import → available, with push notifications when it's ready.
+  Browse what's missing from your library, search, tap <b>Request</b>, and watch it go from search → download → import → available, with push notifications when it's ready.
 </p>
 
 <p align="center">
@@ -41,11 +41,12 @@ Lidseeker has:
 ## Screenshots
 
 <p align="center">
-  <img src="docs/screenshots/discover.png" width="220" alt="Discover" />
-  <img src="docs/screenshots/search.png" width="220" alt="Search" />
-  <img src="docs/screenshots/artist.png" width="220" alt="Artist detail" />
+  <img src="docs/screenshots/discover.png" width="220" alt="Discover: the 1990s, best-known first" />
+  <img src="docs/screenshots/search.png" width="220" alt="Searching an artist leads with their real albums" />
+  <img src="docs/screenshots/artist.png" width="220" alt="Artist detail with multi-select request" />
   <img src="docs/screenshots/requests.png" width="220" alt="Live request pipeline" />
 </p>
+<p align="center"><sub>Discover (browsing the 1990s) · Search · Artist · Requests</sub></p>
 
 <details>
 <summary>More screenshots</summary>
@@ -178,30 +179,42 @@ docker compose -f docker-compose.yml -f docker-compose.soularr.yml up -d
 
 ## Features
 
-- **Built-in web UI** — a full-featured web app (Discover, Search, request pipeline, Settings) served by
-  the backend, plus an optional native Android app. Both talk to the same API.
-- **Search & request** — artists, albums, and individual songs (MusicBrainz metadata via Lidarr). Tap
-  **Request** and Lidseeker adds + monitors it in Lidarr and kicks off a search. Track requests show a
-  confirmation that the full album will be downloaded.
-- **"In library" badges** — search results and Discover highlight albums already in your Lidarr library
-  so you don't accidentally re-request something you own.
-- **Live request pipeline** — every request shows a 5-stage tracker (requested → searching → downloading →
-  importing → available) with a progress bar. Status updates arrive instantly via **Server-Sent Events**
-  (no polling delay).
-- **Request stats bar** — a summary line at the top of the requests view shows how many are ready,
-  downloading, pending, and failed at a glance.
-- **Per-request "Search Now"** — trigger a search for a single specific request rather than all pending
-  ones at once. Useful when one album is being elusive while others download fine.
-- **Clear fulfilled requests** — bulk-remove all "available" requests once you've listened to them.
-- **Gives up gracefully** — a request that finds no source after a few search cycles is marked **Failed**
-  (red) with a one-tap **Retry**, instead of hanging on "pending" forever.
-- **Discover** — unowned releases from artists already in your library, browsable by genre and decade.
-  Filter selections are preserved in the URL so navigating away and back restores your view.
-- **Push notifications** — optional [ntfy](https://ntfy.sh) push the moment an album becomes available
-  (works with the app closed).
-- **Multi-user** — admin-managed accounts (Settings → Users). Everyone sees only their own
-  requests; admins see everyone's, with who requested what. JWT auth; your Lidarr key stays on the
-  server. All users can change their own password from Settings.
+**Find music**
+
+- **Discover** — unowned releases from artists already in your library. **New** shows the latest
+  releases; the **decade** and **genre** chips browse by popularity, so "1990s" opens with the decade's
+  best-known records rather than whatever came out in December 1999. Filters combine, and on the web
+  they live in the URL so Back restores your view.
+- **Smart search** — artists, albums, and individual songs (MusicBrainz metadata via Lidarr). Search an
+  artist's name on the Albums tab and their actual studio albums and EPs come first, ahead of
+  bootlegs, tributes and other artists' songs that share the name.
+- **Track lists before you request** — expand any album (Discover, Search, artist page) to see its
+  songs and running times. Tap an album to jump to its artist's full discography.
+- **"In library" badges** — based on real downloaded files, so you don't re-request what you own.
+- **Cover art everywhere** — falls back to the Cover Art Archive when Lidarr has no image.
+
+**Request and track**
+
+- **One-tap requests** — Lidseeker adds the artist (unmonitored), monitors just that album, and kicks
+  off a search. Pick several albums on an artist page and request them together. Song requests
+  confirm that the whole album will be fetched.
+- **Live request pipeline** — every request shows a 5-stage tracker (requested → searching →
+  downloading → importing → available) with a progress bar, pushed instantly via **Server-Sent Events**.
+- **Status at a glance** — the web UI shows a ready / downloading / pending / failed summary; the
+  Android app turns those into **filter chips** (All · In progress · Ready · Failed).
+- **Per-request "Search Now"**, **bulk-clear fulfilled requests**, and **graceful give-up** — a request
+  that finds no source after a few search cycles is marked **Failed** with a one-tap **Retry**.
+- **Push notifications** — optional [ntfy](https://ntfy.sh) push the moment an album is available. The
+  Android app has a one-tap **Subscribe in ntfy** button (and **Copy topic**).
+
+**Run it**
+
+- **One container** — FastAPI backend + built-in web UI; optional native Android app. Your Lidarr API
+  key never leaves the server.
+- **Fast** — the Discover catalogue is warmed at startup and refreshed in the background, so it opens
+  instantly even with thousands of albums.
+- **Multi-user** — admin-managed accounts (Settings → Users). Everyone sees their own requests;
+  admins see everyone's, with who asked for what. Anyone can change their own password.
 
 ## Configuration
 
@@ -264,6 +277,25 @@ The Android app builds with `./gradlew assembleDebug` (Android SDK + JDK 17).
 ## Changelog
 
 Full history and downloads on the [releases page](https://github.com/IvoryCobra-VC/lidseeker/releases).
+
+### v0.5.0-beta
+Found by putting the Android app through a hands-on review on a real phone.
+- **Discover decades and genres browse by popularity** — previously a decade chip listed newest-first,
+  so "1990s" showed hundreds of 1999 releases before reaching 1998. "New" is unchanged.
+- **Discover opens instantly** — the catalogue is warmed at startup and served stale-while-revalidate
+  (10 min) instead of a multi-second cold fetch on first open.
+- **Much better album search** — searching an artist's name now leads with that artist's albums and
+  EPs; the remaining loose matches are ranked (artist match → studio over live/compilation → album
+  over single → most-rated).
+- **Search "In library" fixed** — it now reflects downloaded files, not merely Lidarr knowing the album.
+- **No more "· 1" years** — Lidarr's `0001-01-01` "unknown" date is hidden instead of shown as year 1.
+- **Cover Art Archive fallback** for albums without Lidarr artwork.
+- **Tap an album to open its artist** (Discover + Search, web and Android); artist pages list albums
+  newest first.
+- **Android:** Discover albums expand to show their track list; titles wrap to two lines with a
+  compact Request button instead of being cut off; the keyboard hides when you search; Requests get
+  status filter chips; Settings gets **Subscribe in ntfy** / **Copy topic** buttons.
+- API: album results carry a new optional `artistForeignId` field.
 
 ### v0.4.1-beta
 - **Live download progress no longer hammers slskd** — the transfers list is fetched once and shared
