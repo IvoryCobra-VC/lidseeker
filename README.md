@@ -278,6 +278,17 @@ The Android app builds with `./gradlew assembleDebug` (Android SDK + JDK 17).
 
 Full history and downloads on the [releases page](https://github.com/IvoryCobra-VC/lidseeker/releases).
 
+### v0.5.1-beta
+Two community fixes — thank you!
+- **Fix: requests for artists with 100+ albums no longer crash the server** — Lidarr ignores paging on
+  its album list, so the fetch looped forever and ran out of memory (and crash-looped on restart as the
+  request was re-queued). By [@xoorath](https://github.com/xoorath) in
+  [#87](https://github.com/IvoryCobra-VC/lidseeker/pull/87).
+- **Fix: album search "In library"** is now driven only by downloaded files — an album Lidarr merely
+  knows about is always requestable, even if the statistics lookup fails. By
+  [@isaacault](https://github.com/isaacault) ([#88](https://github.com/IvoryCobra-VC/lidseeker/issues/88),
+  [#89](https://github.com/IvoryCobra-VC/lidseeker/pull/89)).
+
 ### v0.5.0-beta
 Found by putting the Android app through a hands-on review on a real phone.
 - **Discover decades and genres browse by popularity** — previously a decade chip listed newest-first,
