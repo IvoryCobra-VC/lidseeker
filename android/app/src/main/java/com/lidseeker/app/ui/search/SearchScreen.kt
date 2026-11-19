@@ -26,6 +26,7 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
@@ -111,8 +112,10 @@ private fun typeNoun(type: String): String = when (type) {
 fun SearchScreen(
     modifier: Modifier = Modifier,
     onArtistClick: (SearchResult) -> Unit,
+    onAlbumArtistClick: (foreignId: String, name: String) -> Unit = { _, _ -> },
 ) {
     val vm: SearchViewModel = viewModel(factory = repoFactory { SearchViewModel(it) })
+    val keyboard = LocalSoftwareKeyboardController.current
 
     Column(modifier.fillMaxSize()) {
         val tabIndex = when (vm.type) { "album" -> 0; "artist" -> 1; else -> 2 }
@@ -132,7 +135,10 @@ fun SearchScreen(
             leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
             singleLine = true,
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-            keyboardActions = KeyboardActions(onSearch = { vm.search() }),
+            keyboardActions = KeyboardActions(onSearch = {
+                keyboard?.hide()   // otherwise it covers most of the results
+                vm.search()
+            }),
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(16.dp),
@@ -200,6 +206,9 @@ fun SearchScreen(
                             subtitle = listOfNotNull(r.artist, r.year?.toString())
                                 .joinToString(" · "),
                             loadTracks = { vm.albumTracks(r.foreignId) },
+                            onRowClick = r.artistForeignId?.let { id ->
+                                { onAlbumArtistClick(id, r.artist ?: r.title) }
+                            },
                             trailing = requestControl,
                         )
                     }

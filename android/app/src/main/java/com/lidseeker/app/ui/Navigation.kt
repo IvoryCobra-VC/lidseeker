@@ -106,7 +106,10 @@ fun AppRoot() {
         }
         composable(Routes.DISCOVER) {
             HomeScaffold(nav, Routes.DISCOVER, "Discover", onLogout) { inner ->
-                DiscoverScreen(modifier = Modifier.padding(inner))
+                DiscoverScreen(
+                    modifier = Modifier.padding(inner),
+                    onArtistClick = { id, name -> nav.navigate(Routes.artist(id, name)) },
+                )
             }
         }
         composable(Routes.SEARCH) {
@@ -114,11 +117,12 @@ fun AppRoot() {
                 SearchScreen(
                     modifier = Modifier.padding(inner),
                     onArtistClick = { r -> nav.navigate(Routes.artist(r.foreignId, r.title)) },
+                    onAlbumArtistClick = { id, name -> nav.navigate(Routes.artist(id, name)) },
                 )
             }
         }
         composable(Routes.REQUESTS) {
-            HomeScaffold(nav, Routes.REQUESTS, "My Requests", onLogout) { inner ->
+            HomeScaffold(nav, Routes.REQUESTS, "Requests", onLogout) { inner ->
                 RequestsScreen(modifier = Modifier.padding(inner))
             }
         }
