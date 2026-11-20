@@ -12,6 +12,13 @@
   <a href="https://github.com/IvoryCobra-VC/lidseeker/pkgs/container/lidseeker"><img alt="GHCR image" src="https://img.shields.io/badge/ghcr.io-lidseeker-blue?logo=docker&logoColor=white"></a>
 </p>
 
+<p align="center">
+  <a href="docs/lidseeker-launch.mp4">
+    <img src="docs/lidseeker-launch-poster.jpg" width="720" alt="Lidseeker launch video: click to play (35 s, with sound)" />
+  </a>
+  <br/><sub>▶ <a href="docs/lidseeker-launch.mp4">Watch the 35-second launch video</a> (with sound)</sub>
+</p>
+
 ---
 
 > [!WARNING]
