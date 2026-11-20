@@ -17,7 +17,7 @@ import sys
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
-DIST = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else "backend/web/dist")
+DIST = os.path.realpath(sys.argv[1] if len(sys.argv) > 1 else "backend/web/dist")
 PORT = int(sys.argv[2] if len(sys.argv) > 2 else 5199)
 
 # ---------------------------------------------------------------- fake catalogue
@@ -161,8 +161,9 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             return self.wfile.write(data)
-        if not os.path.exists(os.path.join(DIST, path.lstrip("/"))) or path == "/":
-            self.path = "/index.html"  # SPA fallback
+        target = os.path.realpath(os.path.join(DIST, path.lstrip("/")))
+        if not target.startswith(DIST + os.sep) or not os.path.isfile(target):
+            self.path = "/index.html"  # SPA fallback; never serve outside DIST
         return super().do_GET()
 
     def do_POST(self):
