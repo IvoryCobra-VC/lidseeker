@@ -13,10 +13,10 @@
 </p>
 
 <p align="center">
-  <a href="docs/lidseeker-launch.mp4">
+  <a href="https://ivorycobra-vc.github.io/lidseeker/launch.html">
     <img src="docs/lidseeker-launch-poster.jpg" width="720" alt="Lidseeker launch video: click to play (35 s, with sound)" />
   </a>
-  <br/><sub>▶ <a href="docs/lidseeker-launch.mp4">Watch the 35-second launch video</a> (with sound)</sub>
+  <br/><sub>▶ <a href="https://ivorycobra-vc.github.io/lidseeker/launch.html">Watch the 35-second launch video</a> (with sound)</sub>
 </p>
 
 ---
